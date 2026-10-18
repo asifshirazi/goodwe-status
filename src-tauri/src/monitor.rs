@@ -770,7 +770,7 @@ mod tests {
         assert!(!m.signed_in && m.account.is_none() && m.last.is_none() && m.off_since.is_none() && m.since_start.is_none());
         assert!(m.history.is_empty() && !m.history_tried && m.chart_view(Instant::now()).is_none());
         let p = crate::view::panel(&m, Instant::now(), false);
-        assert!(!p.signed_in && p.account.is_none() && p.battery.is_none() && p.chart.is_none());
+        assert!(!p.signed_in && p.battery.is_none() && p.chart.is_none());
     }
 
     #[tokio::test]
@@ -800,7 +800,7 @@ mod tests {
         mon.lock().unwrap().account = Some("name@example.com".into());
         poll_once(&src, &mon).await;
         let p = crate::view::panel(&mon.lock().unwrap(), Instant::now(), false);
-        // signedIn false → panel.js shows Sign In… (footer_signed_out), no account line
-        assert!(!p.signed_in && p.account.is_none());
+        // signedIn false → panel.js shows Sign In… (panel_footer_signed_out_has_sign_in); Settings shows no email
+        assert!(!p.signed_in && crate::settings::account(&mon.lock().unwrap()).email.is_none());
     }
 }

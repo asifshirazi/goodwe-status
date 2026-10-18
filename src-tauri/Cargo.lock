@@ -1572,6 +1572,7 @@ name = "goodwe-status"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "hmac",
  "keyring",
  "mac-usernotifications",
  "md-5",

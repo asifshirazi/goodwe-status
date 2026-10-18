@@ -1,0 +1,374 @@
+//! The Settings window (label `settings` in tauri.conf.json, hidden until opened): General and
+//! Automation panes behind a toolbar, under a native Overlay title bar that shows the pane's
+//! name. Rust builds the whole `settings-state` and sends it to this window only, on open and on
+//! every change; the page answers with `settings_action`. Changes apply at once.
+
+use crate::automation::{Automation, View, Which};
+use crate::monitor::Monitor;
+use crate::tuya::Keys;
+use crate::{creds, logdir, shell, signin};
+use serde::Serialize;
+use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, WebviewWindow};
+use tauri_plugin_opener::OpenerExt;
+
+const WIN: &str = "settings";
+const WIN_W: f64 = 560.0;
+/// The README's Tuya section (the connect form's link).
+const HOWTO: &str = "https://github.com/asifshirazi/goodwe-status#device-automation-tuya";
+
+/// The login item behind Open at login. The app's is tauri-plugin-autostart; tests use a fake.
+pub trait LoginItem {
+    fn is_enabled(&self) -> bool;
+    fn set(&self, on: bool) -> Result<(), String>;
+}
+
+struct AutoStart<'a>(&'a AppHandle);
+
+impl LoginItem for AutoStart<'_> {
+    fn is_enabled(&self) -> bool {
+        use tauri_plugin_autostart::ManagerExt;
+        self.0.autolaunch().is_enabled().unwrap_or(false)
+    }
+    fn set(&self, on: bool) -> Result<(), String> {
+        use tauri_plugin_autostart::ManagerExt;
+        let al = self.0.autolaunch();
+        if on { al.enable() } else { al.disable() }.map_err(|e| e.to_string())
+    }
+}
+
+pub fn login_item(app: &AppHandle) -> impl LoginItem + '_ {
+    AutoStart(app)
+}
+
+/// Turns the login item on or off (`want`), then reads what the system says: the switch shows
+/// the real state, also when the user removed the item in System Settings or the change failed.
+pub fn login_state(item: &dyn LoginItem, want: Option<bool>) -> (bool, Option<String>) {
+    let err = want.and_then(|on| item.set(on).err());
+    (item.is_enabled(), err)
+}
+
+#[derive(Default)]
+pub struct Settings {
+    /// The page has loaded and listens for `settings-open`.
+    loaded: AtomicBool,
+    /// An open was asked for before the page loaded.
+    wanted: AtomicBool,
+    /// The real login-item state, read on open, when General is shown, and after a change.
+    open_at_login: AtomicBool,
+}
+
+/// The pane to show: the last one shown, else General.
+pub fn pane(saved: Option<&str>) -> &'static str {
+    if saved == Some("automation") { "automation" } else { "general" }
+}
+
+/// The window title: the visible pane's name.
+pub fn title(pane: &str) -> &'static str {
+    if pane == "automation" { "Automation" } else { "General" }
+}
+
+#[derive(Debug, Serialize)]
+pub struct State {
+    pub pane: &'static str,
+    pub account: Account,
+    pub general: General,
+    #[serde(flatten)]
+    pub auto: View,
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Account {
+    pub signed_in: bool,
+    /// Only while signed in and known (the Keychain may not have answered yet).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct General {
+    pub open_at_login: bool,
+}
+
+pub fn account(m: &Monitor) -> Account {
+    Account { signed_in: m.signed_in, email: m.account.clone().filter(|_| m.signed_in) }
+}
+
+fn state(app: &AppHandle) -> Option<State> {
+    let auto = app.try_state::<Arc<Automation>>()?;
+    // The Monitor lock is let go before `view`, whose grid hook takes it again.
+    let account = account(&app.state::<Arc<Mutex<Monitor>>>().lock().unwrap());
+    let view = auto.view(account.signed_in);
+    Some(State {
+        pane: pane(auto.pane().as_deref()),
+        account,
+        general: General { open_at_login: app.state::<Settings>().open_at_login.load(Ordering::SeqCst) },
+        auto: view,
+    })
+}
+
+/// Sends the state to the window while it is open (shell::refresh and every automation change).
+pub fn refresh(app: &AppHandle) {
+    if !app.get_webview_window(WIN).is_some_and(|w| w.is_visible().unwrap_or(false)) {
+        return;
+    }
+    if let Some(s) = state(app).and_then(|s| serde_json::to_value(s).ok()) {
+        let _ = app.emit_to(WIN, "settings-state", s);
+    }
+}
+
+/// Reads the login item, sets the title and, on Automation, refreshes the device list.
+fn show_pane(app: &AppHandle, pane: &str) {
+    let (on, _) = login_state(&login_item(app), None);
+    app.state::<Settings>().open_at_login.store(on, Ordering::SeqCst);
+    if let Some(w) = app.get_webview_window(WIN) {
+        let _ = w.set_title(title(pane));
+    }
+    if pane == "automation" {
+        app.state::<Arc<Automation>>().refresh_devices();
+    }
+}
+
+/// Settings… in the panel, ⌘,: opens it on the last pane, or focuses it when it is open.
+pub fn open(app: &AppHandle) {
+    let st = app.state::<Settings>();
+    if !st.loaded.load(Ordering::SeqCst) {
+        st.wanted.store(true, Ordering::SeqCst);
+        return;
+    }
+    let p = pane(app.state::<Arc<Automation>>().pane().as_deref());
+    show_pane(app, p);
+    if let Some(s) = state(app).and_then(|s| serde_json::to_value(s).ok()) {
+        let _ = app.emit_to(WIN, "settings-open", s);
+    }
+}
+
+/// Close button, ⌘W, Esc: a Connect in flight is dropped (nothing saved), the window hides.
+pub fn close(app: &AppHandle) {
+    app.state::<Arc<Automation>>().cancel_connect();
+    if let Some(w) = app.get_webview_window(WIN) {
+        let _ = w.hide();
+    }
+    // Give the keyboard back to the app the user was in, unless another window of ours is up.
+    #[cfg(target_os = "macos")]
+    if !["panel", "signin"].iter().any(|l| app.get_webview_window(l).is_some_and(|w| w.is_visible().unwrap_or(false))) {
+        let _ = app.hide();
+    }
+}
+
+#[tauri::command]
+pub fn settings_ready(app: AppHandle) {
+    let st = app.state::<Settings>();
+    st.loaded.store(true, Ordering::SeqCst);
+    if st.wanted.swap(false, Ordering::SeqCst) {
+        open(&app);
+    }
+}
+
+/// The page is `h` tall. The top edge stays put (AppKit keeps the bottom); at most the screen's
+/// visible height − 80, then the pane scrolls. `show`: bring it forward (Accessory app: activate
+/// first), centred the first time it shows.
+#[tauri::command]
+pub fn settings_show(app: AppHandle, win: WebviewWindow, h: f64, show: bool) {
+    let visible = win.is_visible().unwrap_or(false);
+    let max = win.current_monitor().ok().flatten().map_or(900.0, |m| m.work_area().size.to_logical::<f64>(m.scale_factor()).height - 80.0);
+    let top = win.outer_position().ok().filter(|_| visible);
+    let _ = win.set_size(LogicalSize::new(WIN_W, h.ceil().clamp(200.0, max.max(200.0))));
+    match top {
+        Some(p) => drop(win.set_position(p)),
+        None if show => drop(win.center()),
+        None => {}
+    }
+    if show {
+        #[cfg(target_os = "macos")]
+        let _ = app.show();
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+/// Every control of the window (spec › State and actions). Devices and Add Device… items are
+/// positions; ids never reach the page. `connect` resolves with the form's error line.
+#[tauri::command]
+pub async fn settings_action(app: AppHandle, a: Value) -> Result<(), String> {
+    let auto = app.state::<Arc<Automation>>().inner().clone();
+    let dir = app.state::<shell::Shell>().log_dir.clone();
+    let num = |k: &str| a[k].as_u64().map(|v| v as usize);
+    let on = a["on"].as_bool().unwrap_or(false);
+    match a["id"].as_str().unwrap_or_default() {
+        "pane" => {
+            let p = pane(a["pane"].as_str());
+            auto.cancel_connect();
+            auto.set_pane(p);
+            show_pane(&app, p);
+        }
+        "signin" => signin::open(&app),
+        "signout" => shell::sign_out(&app).await,
+        "login" => {
+            let (now, err) = login_state(&login_item(&app), Some(on));
+            app.state::<Settings>().open_at_login.store(now, Ordering::SeqCst);
+            logdir::line(&dir, &format!("open at login: {}", err.unwrap_or_else(|| if now { "on" } else { "off" }.into())));
+        }
+        "logs" => shell::open_logs(&app),
+        "enable" => num("device").into_iter().for_each(|d| auto.set_on(d, on)),
+        "choice" => {
+            let which = if a["which"] == "on" { Which::On } else { Which::Off };
+            if let (Some(d), Some(c)) = (num("device"), num("choice")) {
+                auto.set_action(d, which, c);
+            }
+        }
+        "delay" => {
+            if let (Some(d), Some(s)) = (num("device"), a["delay_s"].as_u64()) {
+                auto.set_delay(d, s.min(24 * 3600) as u32);
+            }
+        }
+        "remove" => num("device").into_iter().for_each(|d| auto.remove(d)),
+        "add" => num("item").into_iter().for_each(|i| auto.add(i)),
+        "connect" => {
+            let s = |k: &str| a[k].as_str().unwrap_or_default().trim().to_owned();
+            let keys = Keys { access_id: s("access_id"), secret: a["secret"].as_str().unwrap_or_default().to_owned(), region: s("dc") };
+            auto.connect(keys.clone()).await?;
+            // Accepted: only now into the Keychain (off the main thread: it can wait on a prompt).
+            match tauri::async_runtime::spawn_blocking(move || creds::save_tuya(&keys)).await {
+                Ok(Ok(())) => {}
+                _ => {
+                    logdir::line(&dir, "tuya: keychain save failed");
+                    auto.keys_not_saved();
+                }
+            }
+        }
+        "disconnect" => {
+            auto.disconnect();
+            if !matches!(tauri::async_runtime::spawn_blocking(creds::delete_tuya).await, Ok(Ok(()))) {
+                logdir::line(&dir, "tuya: keychain delete failed");
+            }
+        }
+        "howto" => drop(app.opener().open_url(HOWTO, None::<&str>)),
+        "close" => close(&app),
+        _ => {}
+    }
+    refresh(&app);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// A login item the user can also change behind the app's back (System Settings).
+    struct Fake {
+        on: Cell<bool>,
+        broken: bool,
+    }
+    impl LoginItem for Fake {
+        fn is_enabled(&self) -> bool {
+            self.on.get()
+        }
+        fn set(&self, on: bool) -> Result<(), String> {
+            if self.broken {
+                return Err("denied".into());
+            }
+            self.on.set(on);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn open_at_login_reflects_system_state() {
+        let item = Fake { on: Cell::new(true), broken: false };
+        assert_eq!(login_state(&item, None), (true, None));
+        item.on.set(false); // removed in System Settings › Login Items
+        assert_eq!(login_state(&item, None), (false, None), "the switch shows what the system says");
+        assert_eq!(login_state(&item, Some(true)), (true, None));
+        assert_eq!(login_state(&item, Some(false)), (false, None));
+        // A change the system refused: the switch stays at the real state.
+        let stuck = Fake { on: Cell::new(false), broken: true };
+        assert_eq!(login_state(&stuck, Some(true)), (false, Some("denied".into())));
+    }
+
+    #[test]
+    fn open_at_login_on_after_first_sign_in() {
+        // The first sign-in turns it on in the bundled app, never under `cargo tauri dev`.
+        let item = Fake { on: Cell::new(false), broken: false };
+        assert!(signin::start_at_login(&item, true).is_some());
+        assert!(item.is_enabled());
+        let dev = Fake { on: Cell::new(false), broken: false };
+        assert!(signin::start_at_login(&dev, false).is_none());
+        assert!(!dev.is_enabled());
+        // Already on: left alone.
+        assert!(signin::start_at_login(&item, true).is_none());
+        // And Settings then shows it on.
+        assert_eq!(login_state(&item, None), (true, None));
+    }
+
+    #[test]
+    fn pane_restored_and_title_follows_pane() {
+        assert_eq!(pane(None), "general", "the first time: General");
+        assert_eq!(pane(Some("automation")), "automation");
+        assert_eq!(pane(Some("something else")), "general");
+        assert_eq!((title("general"), title("automation")), ("General", "Automation"));
+        // The pane is saved with the settings file (automation::settings_file_has_no_secret round-trips it).
+        let p = std::env::temp_dir().join(format!("gw-pane-{}.json", std::process::id()));
+        let auto = Automation::new(Some(p.clone()), crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), off_now: Box::new(|| None) });
+        auto.set_pane("automation");
+        let again = Automation::new(Some(p.clone()), crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), off_now: Box::new(|| None) });
+        assert_eq!(pane(again.pane().as_deref()), "automation");
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn account_only_while_signed_in() {
+        let mut m = Monitor::new(true);
+        assert_eq!(account(&m), Account { signed_in: true, email: None }, "before the Keychain answers: 'Signed in'");
+        m.account = Some("name@example.com".into());
+        assert_eq!(account(&m).email.as_deref(), Some("name@example.com"));
+        m.signed_in = false; // e.g. WrongLogin before the reset
+        assert_eq!(account(&m), Account { signed_in: false, email: None });
+        m.reset(false);
+        assert_eq!(account(&m), Account { signed_in: false, email: None });
+        assert_eq!(serde_json::to_value(account(&Monitor::new(false))).unwrap(), serde_json::json!({ "signedIn": false }));
+    }
+
+    #[test]
+    fn settings_window_has_start_dragging_permission() {
+        let cap: Value = serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        assert!(cap["windows"].as_array().unwrap().iter().any(|w| w == WIN));
+        assert!(cap["permissions"].as_array().unwrap().iter().any(|p| p == "core:window:allow-start-dragging"));
+        // And the window itself: Overlay title bar, 560 wide, not resizable, hidden until opened.
+        let conf: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let w = conf["app"]["windows"].as_array().unwrap().iter().find(|w| w["label"] == WIN).unwrap();
+        assert_eq!((w["titleBarStyle"].as_str(), w["width"].as_f64(), w["resizable"].as_bool(), w["visible"].as_bool()), (Some("Overlay"), Some(WIN_W), Some(false), Some(false)));
+    }
+
+    #[test]
+    fn settings_title_strip_is_empty() {
+        // D-O11: the native title bar draws the traffic lights and the pane title; the strip under it is empty.
+        let js = include_str!("../../ui/settings.js");
+        assert!(js.contains(r#"<div class="titlebar" data-drag></div>"#));
+        for bad in [r#"class="tl""#, r#"class="tt""#] {
+            assert!(!js.contains(bad), "{bad}");
+        }
+        // D-O10: the toolbar's gaps drag too; the tab buttons don't carry it. B-R2: our own handler starts the drag on
+        // a move, so Tauri's mousedown drag region must not be used anywhere.
+        assert!(js.contains(r#"role="tablist" aria-label="Settings" data-drag>"#));
+        assert!(js.contains("plugin:window|start_dragging") && !js.contains("data-tauri-drag-region"));
+        let css = include_str!("../../ui/settings.css");
+        assert!(!css.contains("MOCK ONLY"), "the mock's fake title bar and pop-ups never ship");
+    }
+
+    #[test]
+    fn settings_state_shape() {
+        let auto = Automation::new(None, crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), off_now: Box::new(|| None) });
+        let s = State { pane: "general", account: account(&Monitor::new(false)), general: General { open_at_login: true }, auto: auto.view(false) };
+        let v = serde_json::to_value(s).unwrap();
+        for k in ["pane", "account", "general", "automation", "tuya", "devices", "add"] {
+            assert!(v.get(k).is_some(), "missing {k}: {v}");
+        }
+        assert_eq!(v["general"], serde_json::json!({ "openAtLogin": true }));
+    }
+}

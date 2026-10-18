@@ -1,0 +1,46 @@
+{
+  "result": {
+    "devices": [
+      {
+        "id": "<device_id>",
+        "name": "Table LED",
+        "category": "dd",
+        "product_name": "Smart LED Strip",
+        "online": true,
+        "local_key": "<redacted>",
+        "uuid": "<redacted>",
+        "ip": "<redacted>",
+        "uid": "<redacted>",
+        "owner_id": "<redacted>",
+        "product_id": "<redacted>",
+        "status": [
+          {
+            "code": "switch_led",
+            "value": true
+          },
+          {
+            "code": "work_mode",
+            "value": "colour"
+          },
+          {
+            "code": "colour_data",
+            "value": "{\"h\":183,\"s\":1000,\"v\":1000}"
+          },
+          {
+            "code": "scene_data",
+            "value": "{\"scene_num\":1,\"scene_units\":[{\"bright\":0,\"h\":46,\"s\":1000,\"temperature\":0,\"unit_change_mode\":\"static\",\"unit_gradient_duration\":13,\"unit_switch_duration\":14,\"v\":716}]}"
+          },
+          {
+            "code": "countdown",
+            "value": 0
+          }
+        ],
+        "other_fields": "active_time,biz_type,create_time,icon,lat,lon,model,sub,time_zone,update_time"
+      }
+    ],
+    "has_more": false,
+    "last_row_key": "<row_key>",
+    "total": 15
+  },
+  "success": true
+}

@@ -18,8 +18,7 @@
                         day: '18 Oct' (T-002, station-local date for the hover read-out),
                         gap?: minutes (5 for SEMS+, 12 for own readings; default by status),
                         now: minuteOfDay, points: [[minuteOfDay, soc, kW], ...] },   // kW > 0 = discharging; x runs 12 AM to now
-     signedIn: bool,
-     account?: 'name@example.com'   // T-002 item 6: the signed-in SEMS account (Credentials.account); only while signedIn and known
+     signedIn: bool
    }
    Times are station-local minutes of today. Keep showing the last series while a refresh runs; 'loading' only before the first. */
 (function (root) {
@@ -44,8 +43,8 @@
     bell: () => `<svg viewBox="0 0 16 16" ${S}><path d="M4 11.2V7.6a4 4 0 0 1 8 0v3.6l1 1.3H3z"/><path d="M6.6 14h2.8"/></svg>`,
     refresh: () => `<svg viewBox="0 0 16 16" ${S}><path d="M13 8a5 5 0 1 1-1.5-3.6"/><path d="M12 1.8v2.9H9.1"/></svg>`,
     person: () => `<svg viewBox="0 0 16 16" ${S}><circle cx="8" cy="5.5" r="2.6"/><path d="M3 13.6c.8-2.4 2.7-3.6 5-3.6s4.2 1.2 5 3.6"/></svg>`,
-    folder: () => `<svg viewBox="0 0 16 16" ${S}><path d="M2 4.6A1.6 1.6 0 0 1 3.6 3h2.9l1.6 1.6h4.3A1.6 1.6 0 0 1 14 6.2v5.2a1.6 1.6 0 0 1-1.6 1.6H3.6A1.6 1.6 0 0 1 2 11.4z"/></svg>`,
     power: () => `<svg viewBox="0 0 16 16" ${S}><path d="M8 2v5.4"/><path d="M4.7 4.3a5 5 0 1 0 6.6 0"/></svg>`,
+    gear: () => `<svg viewBox="0 0 16 16" ${S}><path d="M14.22 7.00L14.22 9.00L12.77 9.13L12.17 10.57L13.11 11.69L11.69 13.11L10.57 12.17L9.13 12.77L9.00 14.22L7.00 14.22L6.87 12.77L5.43 12.17L4.31 13.11L2.89 11.69L3.83 10.57L3.23 9.13L1.78 9.00L1.78 7.00L3.23 6.87L3.83 5.43L2.89 4.31L4.31 2.89L5.43 3.83L6.87 3.23L7.00 1.78L9.00 1.78L9.13 3.23L10.57 3.83L11.69 2.89L13.11 4.31L12.17 5.43L12.77 6.87Z"/><circle cx="8" cy="8" r="2.1"/></svg>`,
   };
   const ic = (name, cls = '') => `<span class="gw-ic ${cls}" aria-hidden="true">${ICONS[name]()}</span>`;
 
@@ -222,15 +221,11 @@
 
     const acts = [];
     if (st.notificationsOff) acts.push(['notif', 'bell', 'Turn On Notifications…', '']);
-    // T-002 item 6: the account sits where "Sign In…" was (first in the footer, away from Quit).
-    // Signed in → "Signed in as <email>" (text, not a row) + Sign Out. Signed out or login failed → Sign In….
-    // Signed in but the Keychain hasn't answered yet (no account) → neither.
+    // The account, Sign Out and the log folder live in Settings. The footer keeps Settings… and Quit, plus Sign In…
+    // only while signed out (the panel is empty without it, so the way in stays one click away).
     if (!st.signedIn) acts.push(['signin', 'person', 'Sign In…', '']);
-    else if (st.account) acts.push(['acct'], ['signout', 'person', 'Sign Out', '']);
-    acts.push(['logs', 'folder', 'Open Log Folder', ''], ['quit', 'power', 'Quit', '⌘Q']);
-    out.push(`<nav class="gw-actions" aria-label="Actions">${acts.map(([id, icon, t, k, dis]) => id === 'acct'
-      ? `<p class="gw-acct" title="${esc(st.account)}">Signed in as <span>${esc(st.account)}</span></p>`
-      : `<button class="gw-act" data-action="${id}"${dis ? ' aria-disabled="true" tabindex="-1"' : ''}>${ic(icon)}<span>${t}</span>${k ? `<span class="k">${k}</span>` : ''}</button>`).join('')}</nav>`);
+    acts.push(['settings', 'gear', 'Settings…', '⌘,'], ['quit', 'power', 'Quit', '⌘Q']);
+    out.push(`<nav class="gw-actions" aria-label="Actions">${acts.map(([id, icon, t, k, dis]) => `<button class="gw-act" data-action="${id}"${dis ? ' aria-disabled="true" tabindex="-1"' : ''}>${ic(icon)}<span>${t}</span>${k ? `<span class="k">${k}</span>` : ''}</button>`).join('')}</nav>`);
 
     return `<div class="gw-panel" role="dialog" aria-label="GoodWe Status">${out.join('')}</div>`;
   }

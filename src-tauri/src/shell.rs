@@ -106,8 +106,9 @@ fn hide(app: &AppHandle, give_back_focus: bool) {
     if let Some(win) = app.get_webview_window(PANEL) {
         let _ = win.hide();
     }
+    // Not while Settings is open: hiding the app would hide it too.
     #[cfg(target_os = "macos")]
-    if give_back_focus {
+    if give_back_focus && !app.get_webview_window("settings").is_some_and(|w| w.is_visible().unwrap_or(false)) {
         let _ = app.hide();
     }
 }
@@ -133,6 +134,8 @@ pub fn refresh(app: &AppHandle) {
         *applied = Some(look);
     }
     let _ = app.emit_to(PANEL, "state", panel);
+    drop(applied);
+    crate::settings::refresh(app);
 }
 
 /// Re-reads the notification setting (panel open, every poll) and redraws when it changed.
@@ -181,6 +184,11 @@ pub fn after_poll(app: &AppHandle, rep: PollReport) {
                 logdir::line(&dir, &format!("notification not sent: {e}"));
             }
         });
+        // After the alert is on its way; the lights run in their own tasks and never hold it up.
+        let at = app.state::<Arc<Mutex<Monitor>>>().lock().unwrap().station_now(Instant::now());
+        if let Some(at) = at {
+            app.state::<Arc<crate::automation::Automation>>().grid_changed(n.grid, at);
+        }
     }
     refresh(app);
     check_notifications(app);
@@ -191,12 +199,12 @@ pub fn panel_height(win: WebviewWindow, h: f64) {
     let _ = win.set_size(LogicalSize::new(PANEL_W, h.ceil().clamp(40.0, 900.0)));
 }
 
-/// The panel's action rows, the Refresh button and keys. Refresh and Sign Out keep the panel
-/// open (you see the result); every other action closes it.
+/// The panel's action rows, the Refresh button and keys. Refresh keeps the panel open (you see
+/// the result); every other action closes it.
 #[tauri::command]
 pub fn panel_action(app: AppHandle, id: String) {
     match id.as_str() {
-        "refresh" | "signout" => {}
+        "refresh" => {}
         "close" => hide(&app, true),
         _ => hide(&app, false),
     }
@@ -209,16 +217,8 @@ pub fn panel_action(app: AppHandle, id: String) {
                 let _ = app.state::<tokio::sync::mpsc::Sender<()>>().try_send(());
             }
         }
-        "signout" => {
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move { sign_out(&app).await });
-        }
         "quit" => app.exit(0),
-        "logs" => {
-            let dir = app.state::<Shell>().log_dir.clone();
-            let _ = std::fs::create_dir_all(&dir);
-            let _ = app.opener().open_path(dir.to_string_lossy(), None::<&str>);
-        }
+        "settings" => crate::settings::open(&app),
         "notif" => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
@@ -236,10 +236,17 @@ pub fn panel_action(app: AppHandle, id: String) {
     }
 }
 
-/// Sign Out: the Keychain item, then the client, then the monitor; the panel stays open,
-/// signed out. A poll holding the client is waited for, but the panel signs out at once
-/// (the monitor's generation makes that poll drop its result).
-async fn sign_out(app: &AppHandle) {
+/// Settings › Open Log Folder: the log folder in Finder.
+pub fn open_logs(app: &AppHandle) {
+    let dir = app.state::<Shell>().log_dir.clone();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = app.opener().open_path(dir.to_string_lossy(), None::<&str>);
+}
+
+/// Settings › Sign Out: the Keychain item, then the client, then the monitor. A poll holding
+/// the client is waited for, but the app signs out at once (the monitor's generation makes
+/// that poll drop its result).
+pub async fn sign_out(app: &AppHandle) {
     let dir = app.state::<Shell>().log_dir.clone();
     match tauri::async_runtime::spawn_blocking(crate::creds::delete).await {
         Ok(Ok(())) => {}

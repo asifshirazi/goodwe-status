@@ -90,9 +90,9 @@ fn close(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(WIN) {
         let _ = w.hide();
     }
-    // Give the keyboard back to the app the user was in, unless the panel is up.
+    // Give the keyboard back to the app the user was in, unless the panel or Settings is up.
     #[cfg(target_os = "macos")]
-    if !app.get_webview_window("panel").is_some_and(|p| p.is_visible().unwrap_or(false)) {
+    if !["panel", "settings"].iter().any(|l| app.get_webview_window(l).is_some_and(|w| w.is_visible().unwrap_or(false))) {
         let _ = app.hide();
     }
 }
@@ -143,21 +143,20 @@ pub async fn signin_submit(app: AppHandle, email: String, password: String) -> R
     let _ = app.state::<tokio::sync::mpsc::Sender<()>>().try_send(());
     shell::ask_notifications(&app);
     if app.state::<SignIn>().first_run.swap(false, Ordering::SeqCst) {
-        start_at_login(&app, &dir);
+        let bundled = std::env::current_exe().is_ok_and(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"));
+        if let Some(r) = start_at_login(&crate::settings::login_item(&app), bundled) {
+            logdir::line(&dir, &format!("start at login: {}", r.err().unwrap_or_else(|| "on".into())));
+        }
+        crate::settings::refresh(&app);
     }
     Ok(())
 }
 
-/// Turns start-at-login on once, after the first sign-in. Only from the bundled .app: a
-/// login item pointing at a `cargo tauri dev` binary would be wrong.
-fn start_at_login(app: &AppHandle, dir: &std::path::Path) {
-    use tauri_plugin_autostart::ManagerExt;
-    let bundled = std::env::current_exe().is_ok_and(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"));
-    let al = app.autolaunch();
-    if bundled && !al.is_enabled().unwrap_or(false) {
-        let r = al.enable();
-        logdir::line(dir, &format!("start at login: {}", if r.is_ok() { "on".to_owned() } else { format!("{r:?}") }));
-    }
+/// Turns start-at-login on once, after the first sign-in (Settings › Open at login shows it).
+/// Only from the bundled .app: a login item pointing at a `cargo tauri dev` binary would be
+/// wrong. None: nothing to do.
+pub fn start_at_login(item: &dyn crate::settings::LoginItem, bundled: bool) -> Option<Result<(), String>> {
+    (bundled && !item.is_enabled()).then(|| item.set(true))
 }
 
 #[cfg(test)]

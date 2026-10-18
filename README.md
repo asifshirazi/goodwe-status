@@ -10,19 +10,35 @@ A macOS menu bar app that shows your home battery level and whether the grid is 
 - **Usually back around 12:05 PM (last 5 days)** while the grid is off, and **Next cut usually around 1:35 PM · back around 4:30 PM** while it is on. Both are estimates from the last 5 days, shown only when those days agree; never a promise.
 - **Chart:** point at it (or Tab, then ← →) to read the time, battery % and kW at that minute.
 - **Refresh:** the ↻ button at the top right, or ⌘R. The panel stays open while it refreshes.
-- **Sign Out** removes the saved login from your Keychain.
+- **Settings…** (⌘,, at the bottom of the panel) holds your account (Sign Out removes the saved login from your Keychain), Open at login, the log folder and the device automation below. Signed out, the panel also shows **Sign In…**.
+- **Device automation:** Tuya / Smart Life devices can change by themselves when the grid goes off or comes back, each after its own delay. See [Device automation (Tuya)](#device-automation-tuya).
 
 ## Install
 
 1. Download `GoodWe Status.zip` from the Releases page, unzip it and move **GoodWe Status.app** to Applications.
 2. The app is not notarized, so the first time **right-click it, choose Open**, then **Open** again. (macOS 15+: try once, then **System Settings › Privacy & Security › Open Anyway**. Or: `xattr -dr com.apple.quarantine "/Applications/GoodWe Status.app"`.)
-3. Sign in with your SEMS Portal email and password. They are kept only in your Keychain. To change account, click the menu bar item, then **Sign Out**, then **Sign In…**.
+3. Sign in with your SEMS Portal email and password. They are kept only in your Keychain. To change account: **Settings… › General › Sign Out**, then **Sign In…**.
 
-- **Keychain:** after each update macOS asks once to use the saved login. Click **Always Allow**.
+- **Keychain:** after each update macOS asks once for each saved item (your SEMS login and, if connected, the Tuya keys). Click **Always Allow**.
 - **Focus can mute alerts:** to hear a power cut during Focus, add GoodWe Status under **System Settings › Focus › (your Focus) › Allowed Apps**.
 - **The history lines need a station without solar panels.** "Since", "Usually back around" and "Next cut" read outages from the minute history (grid at 0, battery carrying the house). With solar, self-consumption looks the same, so those lines would be wrong (the off-minute rule in `sems.rs` would also need the solar power at 0). The live grid state and alerts work with solar.
 - **Requests:** the history costs 5 extra requests when the app starts and one more each day; after that the same two requests per 2-minute poll as before (today's history comes with the chart).
-- **Start at login** is on after first sign-in. To turn it off: **System Settings › General › Login Items & Extensions**, switch off **GoodWe Status**.
+- **Start at login** is on after first sign-in. To turn it off: **Settings… › General › Open at login**.
+
+## Device automation (Tuya)
+
+<img src="docs/screenshots/settings-light.jpg" alt="Settings, Automation pane" width="500">
+
+Set each Tuya device's **Grid off** and **Grid on** choice (a light's mode or power, a switch's On / Off) and a **Delay** (Instant to 30 min, used both ways). If the grid changes back before the delay ends, the waiting change is dropped. The switch at the right of each device turns its automation on or off (a device you add starts on). It uses the official Tuya cloud API with your own free cloud project:
+
+1. On [platform.tuya.com](https://platform.tuya.com): **Cloud › Development › Create Cloud Project** (industry and method: Smart Home). Pick the **data center** your Smart Life account uses.
+2. In the project, **Service API**: make sure **IoT Core** and **Authorization Token Management** are subscribed.
+3. **Devices › Link App Account › Add App Account**, then scan the QR code in the Smart Life app (**Me**, scan icon) with **Read and write** permission. Your devices appear in the project.
+4. **Overview**: copy the **Access ID** and **Access Secret**.
+5. In GoodWe Status: **Settings… › Automation**, paste them, pick the data center, **Connect**. Then **Add Device…** and set each device's choices and delay. Turn a device's switch off to leave it alone.
+6. The free IoT Core plan lasts about 6 months: renew it under **Cloud › My Services › Extend trial period** (free so far, per users; usually approved within a working day). While it is expired, Settings says so and devices don't change. Trial limits: 26 000 calls a month and 10 devices, far more than this needs (a call per device per grid change).
+
+The keys stay in your Keychain; the device list stays in the app's settings file, never in the repo or the log. Failures show only in Settings, never in the panel or the alert.
 
 ## Build from source
 
@@ -69,7 +85,7 @@ ditto -c -k --keepParent "src-tauri/target/release/bundle/macos/GoodWe Status.ap
 
 ## When GoodWe changes their API
 
-1. When a reply can't be read, the menu bar item greys out and the reason plus the reply (personal fields removed) go to the log. Click the menu bar item, then **Open Log Folder**.
+1. When a reply can't be read, the menu bar item greys out and the reason plus the reply (personal fields removed) go to the log. Click the menu bar item, then **Settings… › General › Open Log Folder**.
 2. Every URL, header, field path and the grid-off minute rule lives in `src-tauri/src/sems.rs`; the outage, "since", "back around" and "next cut" rules live in `src-tauri/src/outages.rs`. Fix the mapping there.
 3. Save the new reply in `src-tauri/tests/fixtures/` with all personal data removed (email, tokens, station id, serial numbers, address), and add its expected result to the tests in `sems.rs` (`sems-plus-grid-history.json` is the history sample: its expected off minutes are there too).
 4. Run `cargo test --manifest-path src-tauri/Cargo.toml` until it passes, then open an issue or pull request with the redacted sample.

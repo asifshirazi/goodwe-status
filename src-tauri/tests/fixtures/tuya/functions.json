@@ -1,0 +1,57 @@
+{
+  "result": {
+    "category": "dd",
+    "functions": [
+      {
+        "code": "switch_led",
+        "desc": "switch led",
+        "name": "switch led",
+        "type": "Boolean",
+        "values": "{}"
+      },
+      {
+        "code": "work_mode",
+        "desc": "work mode",
+        "name": "work mode",
+        "type": "Enum",
+        "values": "{\"range\":[\"white\",\"colour\",\"scene\",\"music\"]}"
+      },
+      {
+        "code": "colour_data",
+        "desc": "colour data",
+        "name": "colour data",
+        "type": "Json",
+        "values": "{\"h\":{\"min\":0,\"scale\":0,\"unit\":\"\",\"max\":360,\"step\":1},\"s\":{\"min\":0,\"scale\":0,\"unit\":\"\",\"max\":1000,\"step\":1},\"v\":{\"min\":0,\"scale\":0,\"unit\":\"\",\"max\":1000,\"step\":1}}"
+      },
+      {
+        "code": "scene_data",
+        "desc": "scene data",
+        "name": "scene data",
+        "type": "Json",
+        "values": "{\"scene_num\":{\"min\":1,\"scale\":0,\"max\":8,\"step\":1},\"scene_units\": {\"unit_change_mode\":{\"range\":[\"static\",\"jump\",\"gradient\"]},\"unit_switch_duration\":{\"min\":0,\"scale\":0,\"max\":100,\"step\":1},\"unit_gradient_duration\":{\"min\":0,\"scale\":0,\"max\":100,\"step\":1},\"bright\":{\"min\":0,\"scale\":0,\"max\":1000,\"step\":1},\"temperature\":{\"min\":0,\"scale\":0,\"max\":1000,\"step\":1},\"h\":{\"min\":0,\"scale\":0,\"unit\":\"\",\"max\":360,\"step\":1},\"s\":{\"min\":0,\"scale\":0,\"unit\":\"\",\"max\":1000,\"step\":1},\"v\":{\"min\":0,\"scale\":0,\"unit\":\"\",\"max\":1000,\"step\":1}}}"
+      },
+      {
+        "code": "countdown",
+        "desc": "countdown",
+        "name": "countdown",
+        "type": "Integer",
+        "values": "{\"min\":0,\"max\":86400,\"scale\":0,\"step\":1}"
+      },
+      {
+        "code": "music_data",
+        "desc": "music data",
+        "name": "music data",
+        "type": "Json",
+        "values": "{\"change_mode\":{\"range\":[\"direct\",\"gradient\"]}, \"bright\":{\"min\":0,\"scale\":0,\"unit\":\"\",\"max\":1000,\"step\":1}, \"temperature\":{\"min\":0,\"scale\":0,\"unit\":\"\",\"max\":1000,\"step\":1}, \"h\":{\"min\":0,\"scale\":0,\"unit\":\"\",\"max\":360,\"step\":1},\"s\":{\"min\":0,\"scale\":0,\"unit\":\"\",\"max\":255,\"step\":1},\"v\":{\"min\":0,\"scale\":0,\"unit\":\"\",\"max\":255,\"step\":1}}"
+      },
+      {
+        "code": "control_data",
+        "desc": "control data",
+        "name": "control data",
+        "type": "Json",
+        "values": "{\"change_mode\":{\"range\":[\"direct\",\"gradient\"]}, \"bright\":{\"min\":0,\"scale\":0,\"unit\":\"\",\"max\":1000,\"step\":1}, \"temperature\":{\"min\":0,\"scale\":0,\"unit\":\"\",\"max\":1000,\"step\":1}, \"h\":{\"min\":0,\"scale\":0,\"unit\":\"\",\"max\":360,\"step\":1},\"s\":{\"min\":0,\"scale\":0,\"unit\":\"\",\"max\":255,\"step\":1},\"v\":{\"min\":0,\"scale\":0,\"unit\":\"\",\"max\":255,\"step\":1}}"
+      }
+    ]
+  },
+  "success": true
+}

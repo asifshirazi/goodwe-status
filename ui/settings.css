@@ -1,0 +1,100 @@
+/* Settings window. Two panes (General, Automation) behind a toolbar; each pane is a macOS System Settings form:
+   headed groups of rows, label left, control right. Tokens: the sign-in box's (ui/signin.html) plus the ones marked new. */
+/* D-R3: without this WebKit draws native controls (pop-ups) in their light look in dark mode. Ships. */
+:root{color-scheme:light dark}
+:root{
+  --label:rgba(0,0,0,.85); --label-2:rgba(0,0,0,.55); --label-disabled:rgba(0,0,0,.25); --accent:#007AFF; --on-accent:#FFFFFF;
+  --error-text:#D70015; --window:#ECECEC; --field:#FFFFFF; --field-edge:rgba(0,0,0,.15); --button:#FFFFFF;
+  /* new */ --link:#0068DA; --group:rgba(255,255,255,.62); --group-edge:rgba(0,0,0,.07); --separator:rgba(0,0,0,.08);
+  --toolbar:#E6E6E6; --tab-selected:rgba(0,0,0,.08); --tab-label:rgba(0,0,0,.60); --tab-icon-selected:#0063E1; --popup-placeholder:rgba(0,0,0,.55); --control-shadow:0 0 0 .5px rgba(0,0,0,.15),0 1px 1px rgba(0,0,0,.06); --fill-hover:rgba(0,0,0,.07); --switch-off:rgba(0,0,0,.10); --switch-edge:rgba(0,0,0,.45); --knob:#FFFFFF; --knob-edge:rgba(0,0,0,.22);
+  --press:150ms; --ease-out:cubic-bezier(.23,1,.32,1);
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --label:rgba(255,255,255,.85); --label-2:rgba(255,255,255,.55); --label-disabled:rgba(255,255,255,.25); --accent:#0A84FF;
+    --error-text:#FF7F78; --window:#2A2A2A; --field:rgba(255,255,255,.06); --field-edge:rgba(255,255,255,.14); --button:rgba(255,255,255,.14);
+    --link:#5CACFF; --group:rgba(255,255,255,.05); --group-edge:rgba(255,255,255,.08); --separator:rgba(255,255,255,.09);
+    --toolbar:#323232; --tab-selected:rgba(255,255,255,.12); --tab-label:rgba(255,255,255,.60); --tab-icon-selected:#5CACFF; --popup-placeholder:rgba(255,255,255,.85); --control-shadow:0 0 0 .5px rgba(255,255,255,.14),0 1px 1px rgba(0,0,0,.30); --fill-hover:rgba(255,255,255,.10); --switch-off:rgba(255,255,255,.16); --switch-edge:rgba(255,255,255,.40); --knob-edge:rgba(0,0,0,.35);
+  }
+}
+html,body{margin:0;padding:0;height:100%;background:var(--window)}
+*{box-sizing:border-box}
+/* The window is the page: the toolbar stays, the pane scrolls when the screen is too short. Height follows the content
+   (never stretched to the window), so settings.js reads the visible pane's own height and the window can shrink (B-R1). */
+.win{display:flex;flex-direction:column;max-height:100vh;background:var(--window);color:var(--label);
+  font:13px/1.35 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;-webkit-font-smoothing:antialiased;cursor:default;user-select:none}
+/* Window chrome. The title bar is native (Tauri titleBarStyle Overlay, title = the visible pane's name; close active,
+   minimise and zoom dimmed). The toolbar row ships: it is HTML drawn on --toolbar under the overlaid title bar. */
+.chrome{flex:none;background:var(--toolbar);border-bottom:1px solid var(--separator)}
+/* Title strip: an empty 28 pt drag region under the overlaid native title bar (D-O10, D-O11). */
+.titlebar{height:28px}
+/* Toolbar: noncustomizable, one item per pane, the active pane always shown selected (HIG Settings). */
+.toolbar{display:flex;justify-content:center;gap:4px;padding:0 0 6px}
+.tab{all:unset;display:flex;flex-direction:column;align-items:center;gap:1px;min-width:64px;padding:4px 8px 3px;border-radius:6px;color:var(--tab-label);font-size:11px;line-height:14px} /* 5.4 / 5.7 on the toolbar */
+.tab svg{width:22px;height:22px}
+.tab[aria-selected="true"]{background:var(--tab-selected);color:var(--label)}
+.tab[aria-selected="true"] svg{color:var(--tab-icon-selected)} /* 3.6 / 3.7 on the selected fill (icons ≥ 3:1) */
+@media (hover:hover){ .tab:not([aria-selected="true"]):hover{color:var(--label)} }
+.tab:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent)}
+.body{flex:0 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;padding:16px 20px 20px}
+.grp.first{margin-top:0}
+h2{font-size:13px;font-weight:600;margin:18px 0 6px 2px}
+.grp{background:var(--group);border:1px solid var(--group-edge);border-radius:8px}
+.row{display:flex;align-items:center;gap:12px;min-height:40px;padding:8px 12px;position:relative}
+.row + .row::before{content:"";position:absolute;top:0;left:12px;right:12px;height:1px;background:var(--separator)}
+.lbl{flex:1;min-width:0} .lbl small{display:block;font-size:11px;color:var(--label-2);margin-top:2px}
+.lbl small.err{color:var(--error-text)}
+.row p{margin:0;font-size:12px;color:var(--label-2)}
+/* Fields and pop-ups: the sign-in box's. */
+input{width:240px;height:22px;padding:0 7px;margin:0;background:var(--field);color:var(--label);border:1px solid var(--field-edge);border-radius:5px;font:inherit;font-size:13px;outline:none;user-select:text}
+input::placeholder{color:var(--label-disabled)}
+input:focus,select:focus-visible{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 45%,transparent);border-color:var(--accent)}
+/* Pop-ups ship with appearance:auto: WebKit draws the real macOS pop-up button and menu (D-R2). */
+select{height:22px;margin:0;font:inherit;font-size:13px;color:var(--label);appearance:auto}
+select:disabled{color:var(--label-disabled)} select.is-placeholder{color:var(--popup-placeholder)} /* D-O6: dark 6.3:1 */
+.row select.wide{width:240px}
+button.btn{height:22px;padding:0 12px;border-radius:5px;border:0;background:var(--button);color:var(--label);font:inherit;font-size:13px;box-shadow:var(--control-shadow);outline:none}
+button.btn.def{background:var(--accent);color:var(--on-accent);box-shadow:none}
+button.btn:focus-visible{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 45%,transparent)}
+.spin{display:inline-block;width:11px;height:11px;border-radius:50%;border:1.5px solid currentColor;border-right-color:transparent;vertical-align:-1px;margin-right:6px;animation:spin .8s linear infinite}
+@keyframes spin{to{rotate:360deg}} @media (prefers-reduced-motion:reduce){.spin{animation:none;opacity:.6}}
+a{color:var(--link);text-decoration:none;font-size:12px;cursor:pointer} @media (hover:hover){a:hover{text-decoration:underline}}
+a:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent);outline-offset:1px;border-radius:3px}
+.err{color:var(--error-text);font-size:11px}
+
+/* Switch: the macOS small switch (32 × 18), its ::before widens the target to 40 × 28. */
+.switch{all:unset;flex:none;position:relative;width:32px;height:18px;border-radius:9px;background:var(--switch-off);transition:background-color var(--press) ease-out}
+.switch::before{content:"";position:absolute;inset:-5px -4px}
+.switch i{position:absolute;top:1px;left:1px;width:16px;height:16px;border-radius:50%;background:var(--knob);box-shadow:0 0 0 .5px var(--knob-edge),0 1px 1.5px var(--knob-edge)}
+.switch[aria-checked="false"]{box-shadow:inset 0 0 0 1px var(--switch-edge)} /* 3:1 against the group (WCAG 1.4.11) */
+.switch[aria-checked="true"]{background:var(--accent)}
+.switch[aria-checked="true"] i{translate:14px 0}
+.switch[aria-disabled="true"]{opacity:.45}
+@media (prefers-reduced-motion:no-preference){ .switch i{transition:translate var(--press) var(--ease-out)} }
+.switch:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (forced-colors:active){ .switch{border:1px solid CanvasText} .switch[aria-checked="true"]{background:Highlight} .switch i{background:CanvasText} select,button,input{border:1px solid ButtonText} }
+
+/* Devices (Change 2, 3): name | grid off | grid on | delay | remove | switch, the status line across under them.
+   Window 560: inner row 494 → name 1fr ≈ 114, choices 106 (fits "Switch 1 Off"), delay 76 (fits "Instant"), switch 32. */
+.devices .hd,.devices .lt{display:grid;grid-template-columns:minmax(0,1fr) 102px 102px 76px 20px 40px;gap:8px;align-items:center}
+/* B-Y7: 16 pt between Remove and the switch (the switch column is 8 pt wider, the switch sits at its right edge). */
+.devices .lt>.switch{justify-self:end}
+/* B-Y8: a device that is switched off shows its name in the secondary colour. */
+.devices .lt.off .nm b{color:var(--label-2)}
+.devices .hd{min-height:30px;font-size:11px;color:var(--label-2)}
+.devices .lt select{width:100%}
+.devices .nm{min-width:0} .devices .nm b{display:block;font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.devices .lt>small{grid-column:1/-1;margin-top:-4px;font-size:11px;color:var(--label-2)}
+.devices .lt>small.err{color:var(--error-text)}
+.devices .wait{grid-column:span 3;font-size:12px;color:var(--label-2)}
+/* Footnote under a group (System Settings style). */
+.foot{margin:6px 2px 0;font-size:11px;color:var(--label-2)}
+/* Change 3: the Automation pane opens with one line of intro (the old switch row's helper), no switch. */
+.intro{margin:0 2px;font-size:12px;color:var(--label-2)}
+.rm{all:unset;display:grid;place-items:center;width:20px;height:20px;border-radius:5px;color:var(--label-2)}
+@media (hover:hover){ .rm:hover{background:var(--fill-hover);color:var(--label)} }
+.rm:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent)} .rm svg{width:14px;height:14px}
+.devices .lt>small .spin{width:9px;height:9px;margin-right:5px}
+h2.first{margin-top:0}
+.lbl small.one{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.connecting{font-size:12px;color:var(--label-2)} .connecting .spin{margin-right:5px}

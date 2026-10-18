@@ -1,5 +1,6 @@
 //! GoodWe Status: battery % and grid on/off in the menu bar.
 
+pub mod automation;
 pub mod clock;
 pub mod creds;
 pub mod logdir;
@@ -8,8 +9,10 @@ pub mod notify;
 pub mod outages;
 pub mod rules;
 pub mod sems;
+pub mod settings;
 pub mod shell;
 pub mod signin;
+pub mod tuya;
 pub mod view;
 
 use std::sync::{Arc, Mutex};
@@ -39,7 +42,10 @@ pub fn run() {
             signin::signin_ready,
             signin::signin_show,
             signin::signin_cancel,
-            signin::signin_submit
+            signin::signin_submit,
+            settings::settings_ready,
+            settings::settings_show,
+            settings::settings_action
         ])
         .setup(|app| {
             // No Dock icon, also under `cargo tauri dev` (the bundle has LSUIElement too).
@@ -47,6 +53,7 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             let log_dir = app.path().app_log_dir()?;
             app.manage(signin::SignIn::default());
+            app.manage(settings::Settings::default());
             // "Getting the first reading…" until the Keychain has answered.
             let mon = Arc::new(Mutex::new(monitor::Monitor::new(true)));
             let client = Arc::new(tokio::sync::Mutex::new(sems::Client::new(None)));
@@ -55,12 +62,42 @@ pub fn run() {
             app.manage(mon.clone());
             app.manage(client.clone());
             logdir::line(&log_dir, "started");
+            let auto = {
+                let (m, d, h) = (mon.clone(), log_dir.clone(), app.handle().clone());
+                automation::Automation::new(
+                    app.path().app_data_dir().ok().map(|p| p.join("settings.json")),
+                    automation::Hooks {
+                        changed: Box::new(move || settings::refresh(&h)),
+                        log: Box::new(move |s| logdir::line(&d, s)),
+                        off_now: Box::new(move || {
+                            let m = m.lock().unwrap();
+                            let now = std::time::Instant::now();
+                            if m.grid != rules::GridState::Off || m.stale(now) {
+                                return None;
+                            }
+                            let at = m.station_now(now)?;
+                            Some(automation::OffNow { at, off_for_s: m.off_since.map_or(0, |o| at.0 - o.at.0) })
+                        }),
+                    },
+                )
+            };
+            app.manage(auto.clone());
             // The tray item first: a Keychain prompt must never hold up the menu bar.
             shell::setup(app, log_dir)?;
+            // The close button hides Settings (one instance, opened again by Settings…).
+            let h = app.handle().clone();
+            app.get_webview_window("settings").expect("settings window in tauri.conf.json").on_window_event(move |e| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = e {
+                    api.prevent_close();
+                    settings::close(&h);
+                }
+            });
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // Off the main thread: the read can wait on a Keychain prompt.
                 let creds = tauri::async_runtime::spawn_blocking(creds::load).await.ok().flatten();
+                // After the SEMS item, never two Keychain prompts at once.
+                auto.set_keys(tauri::async_runtime::spawn_blocking(creds::load_tuya).await.ok().flatten());
                 let signed_in = {
                     let mut c = client.lock().await;
                     // Unless the user already signed in through the box meanwhile.

@@ -18,6 +18,11 @@
         "label": "signin", "title": "Sign in to SEMS Portal", "url": "signin.html", "width": 320, "height": 520,
         "visible": false, "decorations": false, "transparent": true, "resizable": false, "center": true,
         "skipTaskbar": true, "shadow": true
+      },
+      {
+        "label": "settings", "title": "General", "url": "settings.html", "width": 560, "height": 400,
+        "visible": false, "resizable": false, "minimizable": false, "maximizable": false, "center": true,
+        "titleBarStyle": "Overlay", "skipTaskbar": true
       }
     ],
     "security": {

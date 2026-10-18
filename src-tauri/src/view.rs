@@ -19,9 +19,6 @@ pub struct PanelState {
     pub signed_in: bool,
     /// A poll the user started runs (Refresh, ⌘R, sign-in): the Refresh icon spins.
     pub refreshing: bool,
-    /// The signed-in account for the footer; absent signed out and before the Keychain answers.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -172,7 +169,6 @@ pub fn panel(m: &Monitor, now: Instant, notifications_off: bool) -> PanelState {
         chart: m.chart_view(now),
         signed_in: m.signed_in,
         refreshing,
-        account: m.account.clone().filter(|_| m.signed_in),
     }
 }
 
@@ -613,7 +609,7 @@ mod tests {
         for k in ["status", "battery", "updated", "notificationsOff", "chart", "signedIn", "refreshing"] {
             assert!(v.get(k).is_some(), "missing {k}");
         }
-        assert!(v.get("account").is_none(), "account only when known");
+        assert!(v.get("account").is_none(), "the account is in Settings, never the panel");
         assert_eq!(v["chart"]["day"], "18 Oct");
         assert_eq!(v["status"], serde_json::json!({ "kind": "on", "title": "Grid on" }), "back and next only when set");
         let st = Status { kind: "off", title: "Grid off", detail: Some("d".into()), back: Some("b".into()), next: Some(["1".into(), "2".into()]) };
@@ -725,33 +721,6 @@ mod tests {
     }
 
     #[test]
-    fn account_shown_when_signed_in() {
-        let (mut m, now) = live(&[("2026-10-18 11:22", ON)]);
-        m.account = Some("name@example.com".into());
-        let p = panel(&m, now, false);
-        assert_eq!(p.account.as_deref(), Some("name@example.com"));
-        assert_eq!(serde_json::to_value(&p).unwrap()["account"], "name@example.com");
-    }
-
-    #[test]
-    fn account_absent_when_signed_out() {
-        let (mut m, now) = live(&[("2026-10-18 11:22", ON)]);
-        m.account = Some("name@example.com".into());
-        m.signed_in = false; // e.g. WrongLogin before the reset
-        assert_eq!(panel(&m, now, false).account, None);
-        m.reset(false);
-        let p = panel(&m, now, false);
-        assert_eq!((p.signed_in, p.account, p.status.kind), (false, None, "signedout"));
-    }
-
-    #[test]
-    fn account_absent_before_keychain() {
-        // launch: Monitor::new(true), the Keychain hasn't answered (no credentials in the client yet)
-        let p = panel(&Monitor::new(true), Instant::now(), false);
-        assert_eq!((p.signed_in, p.account), (true, None));
-    }
-
-    #[test]
     fn refreshing_marks_freshness_line() {
         let (mut m, now) = live(&[("2026-10-18 11:22", ON)]);
         assert_eq!(m.ask_refresh(), Some(true));
@@ -857,17 +826,9 @@ mod tests {
         let mixed: Vec<(i64, i64)> = [("13", "03:00", "04:00"), ("14", "08:00", "09:30"), ("15", "13:00", "14:30"), ("16", "17:00", "18:30"), ("17", "21:00", "22:00")]
             .iter().map(|(d, a, b)| (at(&format!("2026-10-{d} {a}")), at(&format!("2026-10-{d} {b}")))).collect();
         put("grid-on-days-disagree", build("2026-10-18", "08:55", None, ON, Some(&mixed), &[]), none.clone());
-        put("account-sign-out-hover", main(), json!({ "row": "signout" }));
-        let (mut m, el) = main();
-        m.account = Some("firstname.middlename.lastname@example-company.com".into());
-        put("account-long-email", (m, el), none.clone());
+        // T-007: the account and Sign Out moved into Settings (its own UI tests); the panel keeps Sign In… while signed out.
         put("signed-out", (Monitor::new(false), Instant::now()), none.clone());
-        // Sign Out from the keyboard: the signed-in panel, focus on Sign Out, then the reset monitor's state
-        let (m, el) = main();
-        let before = serde_json::to_value(panel(&m, el, false)).unwrap();
-        let (mut m, el) = main();
-        m.reset(false);
-        put("signed-out-after-sign-out", (m, el), json!({ "before": before, "focus": "signout" }));
+        put("settings-row-hover", main(), json!({ "row": "settings" }));
         let path = std::env::var("GW_FIXTURES").unwrap_or_else(|_| std::env::temp_dir().join("gw-t002.json").to_string_lossy().into_owned());
         std::fs::write(&path, serde_json::to_string_pretty(&out).unwrap()).unwrap();
         println!("{} states → {path}", out.len());

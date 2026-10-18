@@ -1,13 +1,11 @@
 // Renders the state Rust sends (shape at the top of panel.js), reports the panel's height,
-// and turns clicks and keys into `panel_action` calls. Refresh and Sign Out keep the panel open;
-// every other action closes it in Rust.
+// and turns clicks and keys into `panel_action` calls. Refresh keeps the panel open; every other
+// action closes it in Rust.
 (function () {
   'use strict';
   const { listen } = window.__TAURI__.event, { invoke } = window.__TAURI__.core;
   const root = document.getElementById('root');
   const SPIN_MS = 800; // one full turn of the Refresh icon (--gw-spin)
-  // After Sign Out its row is gone: focus goes to Sign In…, in the same slot.
-  const FOCUS_NEXT = { signout: 'signin' };
   let state = null, busySince = 0, held = 0;
 
   function render(s) {
@@ -21,7 +19,7 @@
     root.innerHTML = GW.renderPanel(s);
     GW.bindChart(root);
     if (focused) {
-      const b = root.querySelector(`[data-action="${focused}"]`) || root.querySelector(`[data-action="${FOCUS_NEXT[focused]}"]`);
+      const b = root.querySelector(`[data-action="${focused}"]`);
       if (b) b.focus();
     }
     const np = root.querySelector('.gw-plot[data-plot]');
@@ -59,7 +57,7 @@
 
   document.addEventListener('keydown', e => {
     const k = e.key.toLowerCase();
-    if (e.metaKey && (k === 'r' || k === 'q')) { e.preventDefault(); run(k === 'r' ? 'refresh' : 'quit'); return; }
+    if (e.metaKey && (k === 'r' || k === 'q' || k === ',')) { e.preventDefault(); run({ r: 'refresh', q: 'quit', ',': 'settings' }[k]); return; }
     if (e.key === 'Escape') { e.preventDefault(); invoke('panel_action', { id: 'close' }); return; }
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     e.preventDefault();

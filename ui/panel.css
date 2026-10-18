@@ -120,7 +120,3 @@
 .gw-tip-none{color:var(--gw-label-2)}
 @media (forced-colors:active){ .gw-tip{border-color:CanvasText} .gw-plot[data-plot]:focus-visible,.gw-icon-btn:focus-visible{outline-color:Highlight} }
 
-/* Account line (item 6): quiet text above Sign Out, text column of the rows (10 + 16 + 8 = 34), not focusable.
-   One line: "Signed in as" never shrinks; a long email ends in "…" (full one in the title tooltip and to VoiceOver). */
-.gw-acct{display:flex;min-width:0;height:22px;align-items:center;padding:0 var(--gw-s3) 0 34px;font-size:12px;color:var(--gw-label-2);white-space:nowrap;cursor:default}
-.gw-acct span{min-width:0;overflow:hidden;text-overflow:ellipsis;margin-left:.3em}
