@@ -132,7 +132,10 @@ pub async fn signin_submit(app: AppHandle, email: String, password: String) -> R
     {
         let mon = app.state::<Arc<Mutex<Monitor>>>();
         let mut m = mon.lock().unwrap();
-        if same_account { m.signed_in = true } else { *m = Monitor::new(true) }
+        if same_account { m.signed_in = true } else { m.reset(true) }
+        m.account = Some(creds.account.clone());
+        // The first poll after a sign-in is the user's: the Refresh icon spins.
+        m.user_poll = true;
     }
     logdir::line(&dir, "signed in");
     close(&app);

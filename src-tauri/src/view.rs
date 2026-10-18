@@ -2,6 +2,7 @@
 //! applies it. Every string is formatted here; panel.js only lays them out (hand-off § 1, § 2).
 
 use crate::monitor::{ChartView, Monitor};
+use crate::outages::{self, HistStart, DAY};
 use crate::rules::{self, GridState};
 use serde::Serialize;
 use std::time::Instant;
@@ -16,6 +17,11 @@ pub struct PanelState {
     pub notifications_off: bool,
     pub chart: Option<ChartView>,
     pub signed_in: bool,
+    /// A poll the user started runs (Refresh, ⌘R, sign-in): the Refresh icon spins.
+    pub refreshing: bool,
+    /// The signed-in account for the footer; absent signed out and before the Keychain answers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -24,6 +30,12 @@ pub struct Status {
     pub title: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Grid off: "Usually back around 12:05 PM (last 5 days)" when the past days agree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub back: Option<String>,
+    /// Grid on: the next usual cut, two lines.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next: Option<[String; 2]>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -69,8 +81,48 @@ fn stale(m: &Monitor, now: Instant) -> bool {
     m.last.is_some() && m.stale(now)
 }
 
+/// Grid off: the Since line (spec › Since rule S1–S7a) and the back-on line (› Back-on rule).
+fn off_lines(m: &Monitor, now: Instant) -> (Option<String>, Option<String>) {
+    let (Some(o), Some(t)) = (m.off_since, m.station_now(now)) else { return (None, None) };
+    let now_min = t.0.div_euclid(60);
+    // S7a / S7: the app's own reading. Exact when it saw the grid go off, else "at least".
+    let seen = || match o.exact {
+        true => (Some(format!("Since {} {}", o.at.hhmm12(), rules::fmt_since_duration(now_min - o.at.0 / 60))), None),
+        false => (Some(format!("Since at least {}", o.at.hhmm12())), None),
+    };
+    if !m.has_history() {
+        return seen(); // no battery, so no history (the off rule needs pBat)
+    }
+    if !m.history_tried {
+        return (None, None); // S1: title only while the first history call runs
+    }
+    let start = match m.hist_start {
+        HistStart::Start(_) | HistStart::Stale => m.since_start, // S2/S3, or S6 keeps it
+        HistStart::AtLeastYesterday => return (Some("Since at least yesterday 12:00\u{a0}AM".into()), None),
+        HistStart::AtLeastToday => return (Some("Since at least 12:00\u{a0}AM".into()), None),
+        HistStart::NotOff => None,
+    };
+    let Some(s) = start else { return seen() };
+    let today = now_min.div_euclid(DAY);
+    let back = m
+        .past_days_loaded(today)
+        .then(|| outages::back_on(&m.outages(today), s, t.0 as f64 / 60.0))
+        .flatten();
+    (Some(outages::since_text(s, now_min)), back)
+}
+
+/// Grid on: the next usual cut (spec › Next-cut rule), only with today and the 5 past days loaded.
+fn next_lines(m: &Monitor, now: Instant) -> Option<[String; 2]> {
+    let t = m.station_now(now)?;
+    let today = t.0.div_euclid(60).div_euclid(DAY);
+    if !(m.has_history() && m.has_today(today) && m.past_days_loaded(today)) {
+        return None;
+    }
+    outages::next_cut(&m.outages(today), t.0 as f64 / 60.0, stale(m, now))
+}
+
 fn status(m: &Monitor, now: Instant) -> Status {
-    let s = |kind, title| Status { kind, title, detail: None };
+    let s = |kind, title| Status { kind, title, detail: None, back: None, next: None };
     if !m.signed_in {
         return Status { detail: Some(SIGNED_OUT_DETAIL.into()), ..s("signedout", "Not signed in") };
     }
@@ -79,14 +131,11 @@ fn status(m: &Monitor, now: Instant) -> Status {
     }
     match m.grid {
         GridState::Unknown => s("unknown", "Grid status not clear yet"),
-        GridState::On => s("on", "Grid on"),
+        GridState::On => Status { next: next_lines(m, now), ..s("on", "Grid on") },
         GridState::Off => {
-            // While stale, "Since …" keeps counting on the station clock.
-            let detail = m.off_since.map(|o| match (o.exact, m.station_now(now)) {
-                (true, Some(t)) => format!("Since {} {}", o.at.hhmm(), rules::fmt_since_duration((t.0 - o.at.0) / 60)),
-                _ => format!("Since at least {}", o.at.hhmm()),
-            });
-            Status { detail, ..s("off", "Grid off") }
+            // While stale, "Since …" keeps counting on the station clock and the back line stays.
+            let (detail, back) = off_lines(m, now);
+            Status { detail, back, ..s("off", "Grid off") }
         }
     }
 }
@@ -101,17 +150,19 @@ pub fn panel(m: &Monitor, now: Instant, notifications_off: bool) -> PanelState {
     let battery = shown.and_then(|r| r.battery.as_ref()).map(|b| BatteryView {
         soc: soc_text(b.soc),
         power: rules::fmt_power(b.watts),
-        left: rules::time_left_min(b.capacity_kwh, b.soc, b.watts).map(|min| {
-            let mut rest = format!("left at {} kW", rules::fmt_kw(b.watts));
-            if stale {
-                rest += &format!(" · as of {}", shown.unwrap().time.hhmm());
-            }
-            Left { time: rules::fmt_left(min), rest }
-        }),
+        // T-003: no "· as of" while stale: the warning row under it carries the time, and 12 h text wrapped.
+        left: rules::time_left_min(b.capacity_kwh, b.soc, b.watts)
+            .map(|min| Left { time: rules::fmt_left(min), rest: format!("left at {} kW", rules::fmt_kw(b.watts)) }),
     });
+    let refreshing = m.user_poll && m.signed_in;
     let updated = shown.map(|r| Updated {
         stale,
-        text: if stale { format!("No new data since {}", r.time.hhmm()) } else { format!("Updated {}", r.time.hhmm()) },
+        text: format!(
+            "{} {}{}",
+            if stale { "No new data since" } else { "Updated" },
+            r.time.hhmm12(),
+            if refreshing { " · refreshing…" } else { "" }
+        ),
     });
     PanelState {
         status: status(m, now),
@@ -120,6 +171,8 @@ pub fn panel(m: &Monitor, now: Instant, notifications_off: bool) -> PanelState {
         notifications_off: notifications_off && m.signed_in,
         chart: m.chart_view(now),
         signed_in: m.signed_in,
+        refreshing,
+        account: m.account.clone().filter(|_| m.signed_in),
     }
 }
 
@@ -133,7 +186,7 @@ pub fn tray(m: &Monitor, now: Instant) -> TrayLook {
     let title = soc.map(soc_text);
     if stale(m, now) {
         let icon = if m.grid == GridState::Off { TrayIcon::OffDim } else { TrayIcon::Dim };
-        return look(icon, title, format!("No new data since {}", r.time.hhmm()));
+        return look(icon, title, format!("No new data since {}", r.time.hhmm12()));
     }
     let icon = if m.grid == GridState::Off { TrayIcon::OffRed } else { TrayIcon::Plug };
     let grid = status(m, now).title;
@@ -184,26 +237,28 @@ mod tests {
     fn grid_off_live_then_stale() {
         let t0 = Instant::now();
         let mut m = Monitor::new(true);
-        m.on_reading(reading("10/18/2026 07:30:00", GridSignal::On, Some((90.0, -500.0))), t0);
+        m.on_reading(reading("10/18/2026 07:37:00", GridSignal::On, Some((90.0, -500.0))), t0);
         m.on_reading(reading("10/18/2026 07:42:00", GridSignal::Off, Some((88.0, 998.28))), t0);
         let t = t0 + 38 * MIN;
         m.on_reading(reading("10/18/2026 08:20:00", GridSignal::Off, Some((86.0, 998.28))), t);
+        assert_eq!(panel(&m, t, false).status.detail, None, "S1: history not answered yet");
+        m.after_history(LocalTs::parse("10/18/2026 08:20:00").unwrap().0 / 60); // history failed: S7a (seen live)
         let p = panel(&m, t, false);
         assert_eq!((p.status.kind, p.status.title), ("off", "Grid off"));
-        assert_eq!(p.status.detail.as_deref(), Some("Since 07:42 (38 min)"));
+        assert_eq!(p.status.detail.as_deref(), Some("Since 7:42\u{a0}AM (38 min)"));
         let b = p.battery.unwrap();
         assert_eq!((b.soc.as_str(), b.power.as_str()), ("86%", "Discharging 998 W"));
         assert_eq!(b.left, Some(Left { time: "~4h 20m".into(), rest: "left at 1.0 kW".into() }));
-        assert_eq!(p.updated, Some(Updated { stale: false, text: "Updated 08:20".into() }));
+        assert_eq!(p.updated, Some(Updated { stale: false, text: "Updated 8:20\u{a0}AM".into() }));
         assert_eq!(tray(&m, t), TrayLook { icon: TrayIcon::OffRed, title: Some("86%".into()), tooltip: "Grid off · battery 86%".into() });
 
-        // no new info.time for 15 min: grey, values kept, "as of"
+        // no new info.time for 15 min: grey, values kept, no "as of" (T-003)
         let t = t0 + 135 * MIN;
         let p = panel(&m, t, false);
-        assert_eq!(p.status.detail.as_deref(), Some("Since 07:42 (2h 15m)"));
-        assert_eq!(p.battery.unwrap().left.unwrap().rest, "left at 1.0 kW · as of 08:20");
-        assert_eq!(p.updated, Some(Updated { stale: true, text: "No new data since 08:20".into() }));
-        assert_eq!(tray(&m, t), TrayLook { icon: TrayIcon::OffDim, title: Some("86%".into()), tooltip: "No new data since 08:20".into() });
+        assert_eq!(p.status.detail.as_deref(), Some("Since 7:42\u{a0}AM (2h 15m)"));
+        assert_eq!(p.battery.unwrap().left.unwrap().rest, "left at 1.0 kW");
+        assert_eq!(p.updated, Some(Updated { stale: true, text: "No new data since 8:20\u{a0}AM".into() }));
+        assert_eq!(tray(&m, t), TrayLook { icon: TrayIcon::OffDim, title: Some("86%".into()), tooltip: "No new data since 8:20\u{a0}AM".into() });
     }
 
     #[test]
@@ -212,8 +267,9 @@ mod tests {
         // first reading during an outage: "Since at least"
         let mut m = Monitor::new(true);
         m.on_reading(reading("10/18/2026 08:20:00", GridSignal::Off, Some((86.0, 0.0))), t0);
+        m.after_history(LocalTs::parse("10/18/2026 08:20:00").unwrap().0 / 60);
         let p = panel(&m, t0, false);
-        assert_eq!(p.status.detail.as_deref(), Some("Since at least 08:20"));
+        assert_eq!(p.status.detail.as_deref(), Some("Since at least 8:20\u{a0}AM"));
         assert_eq!(p.battery.unwrap(), BatteryView { soc: "86%".into(), power: "Battery idle".into(), left: None });
 
         // first reading disagrees: not clear yet, plain plug
@@ -234,6 +290,319 @@ mod tests {
         assert_eq!(tray(&m, t0), TrayLook { icon: TrayIcon::OffRed, title: None, tooltip: "Grid off".into() });
         let p = panel(&m, t0, false);
         assert!(p.battery.is_none() && p.chart.is_none() && p.updated.is_some());
+        // no battery, no history: T-001's own reading ("since at least", or exact when seen going off)
+        assert_eq!(p.status.detail.as_deref(), Some("Since at least 8:20\u{a0}AM"));
+        let (m, el) = off_no_battery(t0, &|hm: &str| format!("10/18/2026 {hm}:00"));
+        assert_eq!(panel(&m, el, false).status.detail.as_deref(), Some("Since 7:42\u{a0}AM (38 min)"));
+    }
+
+    // ---- T-002: since / back / next through Monitor (spec › Since rule, Back-on, Next-cut tests) ----
+
+    use crate::outages::testdata::{at, days_from, fixture, table};
+    use crate::outages::GridDay;
+    use std::collections::BTreeMap;
+
+    /// "2026-10-18 11:22" → the reading's time string.
+    fn ts(s: &str) -> String {
+        format!("{s}:00")
+    }
+    fn day(s: &str) -> i64 {
+        at(s).div_euclid(DAY)
+    }
+    /// Feeds one poll's history at station minute `now`, as poll_once does.
+    fn history(m: &mut Monitor, days: BTreeMap<i64, GridDay>, now: i64) {
+        for (d, g) in days {
+            m.on_day(d, g, now);
+        }
+        m.after_history(now);
+    }
+    /// A monitor with live readings `live` (time, signal; one minute apart on the app clock is not
+    /// needed: each is seen at its own station time) and the panel's instant at the last one.
+    fn live(v: &[(&str, GridSignal)]) -> (Monitor, Instant) {
+        let t0 = Instant::now();
+        let first = at(v[0].0);
+        let mut m = Monitor::new(true);
+        let mut el = t0;
+        for (t, g) in v {
+            el = t0 + Duration::from_secs(((at(t) - first) * 60) as u64);
+            m.on_reading(reading(&ts(t), *g, Some((80.0, 900.0))), el);
+        }
+        (m, el)
+    }
+    /// The fixture's real series (trimmed windows), day `d` cut at minute `upto` of that day.
+    fn sample_day(d: &str, upto: Option<u32>) -> GridDay {
+        let g = crate::sems::parse_grid_day(&fixture()["reply"], day(&format!("{d} 00:00"))).unwrap();
+        match upto {
+            Some(u) => GridDay { off: g.off.into_iter().filter(|p| p.0 <= u).collect(), newest: Some(u) },
+            None => g,
+        }
+    }
+    fn detail(m: &Monitor, now: Instant) -> Option<String> {
+        panel(m, now, false).status.detail
+    }
+    use GridSignal::{Off as OFF, On as ON};
+
+    #[test]
+    fn since_from_history_today() {
+        // table-driven series (not series-real): 10-18 09:07–12:03
+        let (mut m, now) = live(&[("2026-10-18 11:22", OFF)]);
+        history(&mut m, days_from(&table(), day("2026-10-13 00:00"), at("2026-10-18 11:22")), at("2026-10-18 11:22"));
+        let st = panel(&m, now, false).status;
+        assert_eq!(st.detail.as_deref(), Some("Since 9:07\u{a0}AM (2h 15m)"));
+        assert_eq!(st.back, None, "A: the days disagree");
+    }
+
+    #[test]
+    fn since_from_yesterday() {
+        // series-real: the sample, yesterday off from 23:33, today off from 00:00, now 00:40
+        let (mut m, now) = live(&[("2026-10-18 00:40", OFF)]);
+        let days = BTreeMap::from([(day("2026-10-17 00:00"), sample_day("2026-10-17", None)), (day("2026-10-18 00:00"), sample_day("2026-10-18", Some(40)))]);
+        history(&mut m, days, at("2026-10-18 00:40"));
+        assert_eq!(detail(&m, now).as_deref(), Some("Since yesterday 11:33\u{a0}PM (1h 7m)"));
+    }
+
+    #[test]
+    fn since_two_day_cap() {
+        // made-up: off since 10-16 20:00, still off at 10-18 01:00
+        let (mut m, now) = live(&[("2026-10-18 01:00", OFF)]);
+        let tb = [(at("2026-10-16 20:00"), at("2026-10-18 05:00"))];
+        history(&mut m, days_from(&tb, day("2026-10-16 00:00"), at("2026-10-18 01:00")), at("2026-10-18 01:00"));
+        assert_eq!(detail(&m, now).as_deref(), Some("Since at least yesterday 12:00\u{a0}AM"));
+        assert_eq!(panel(&m, now, false).status.back, None);
+    }
+
+    #[test]
+    fn since_yesterday_call_failed() {
+        // series-real today (off from 00:00), yesterday's call failed
+        let (mut m, now) = live(&[("2026-10-18 00:40", OFF)]);
+        history(&mut m, BTreeMap::from([(day("2026-10-18 00:00"), sample_day("2026-10-18", Some(40)))]), at("2026-10-18 00:40"));
+        assert_eq!(detail(&m, now).as_deref(), Some("Since at least 12:00\u{a0}AM"));
+        assert_eq!(panel(&m, now, false).status.back, None);
+    }
+
+    #[test]
+    fn since_history_lagging() {
+        // made-up: live off at 11:58; history's newest point 11:56 is still on
+        let (mut m, now) = live(&[("2026-10-18 11:53", ON), ("2026-10-18 11:58", OFF)]);
+        let tb = [(at("2026-10-18 11:57"), at("2026-10-18 13:00"))];
+        history(&mut m, days_from(&tb, day("2026-10-18 00:00"), at("2026-10-18 11:56")), at("2026-10-18 11:58"));
+        // seen live (On 5 min before): S7a
+        let now = now + Duration::from_secs(120);
+        assert_eq!(detail(&m, now).as_deref(), Some("Since 11:58\u{a0}AM (2 min)"));
+        // next poll: history shows off from 11:57
+        m.on_reading(reading(&ts("2026-10-18 12:00"), OFF, Some((80.0, 900.0))), now);
+        history(&mut m, days_from(&tb, day("2026-10-18 00:00"), at("2026-10-18 12:00")), at("2026-10-18 12:00"));
+        assert_eq!(detail(&m, now).as_deref(), Some("Since 11:57\u{a0}AM (3 min)"));
+    }
+
+    #[test]
+    fn since_lone_zero_minute_ignored() {
+        // series-real: 12:10 is one off minute after the 12:03 end → not an outage → S7
+        let (mut m, now) = live(&[("2026-10-18 12:10", OFF)]);
+        let days = BTreeMap::from([(day("2026-10-17 00:00"), sample_day("2026-10-17", None)), (day("2026-10-18 00:00"), sample_day("2026-10-18", Some(730)))]);
+        history(&mut m, days, at("2026-10-18 12:10"));
+        assert_eq!(m.hist_start, HistStart::NotOff);
+        assert_eq!(detail(&m, now).as_deref(), Some("Since at least 12:10\u{a0}PM"), "first reading already off: S7");
+        // D-Y16: the same history with live 12:05 On, 12:10 Off → S7a
+        let (mut m, now) = live(&[("2026-10-18 12:05", ON), ("2026-10-18 12:10", OFF)]);
+        let days = BTreeMap::from([(day("2026-10-17 00:00"), sample_day("2026-10-17", None)), (day("2026-10-18 00:00"), sample_day("2026-10-18", Some(730)))]);
+        history(&mut m, days, at("2026-10-18 12:10"));
+        assert_eq!(detail(&m, now).as_deref(), Some("Since 12:10\u{a0}PM (0 min)"));
+    }
+
+    #[test]
+    fn since_seen_live_exact() {
+        // S7a: history call errors; 07:37 On, 07:42 Off, now 08:20
+        let (mut m, now) = live(&[("2026-10-18 07:37", ON), ("2026-10-18 07:42", OFF), ("2026-10-18 08:20", OFF)]);
+        history(&mut m, BTreeMap::new(), at("2026-10-18 08:20"));
+        let st = panel(&m, now, false).status;
+        assert_eq!((st.detail.as_deref(), st.back), (Some("Since 7:42\u{a0}AM (38 min)"), None));
+    }
+
+    #[test]
+    fn since_seen_live_after_gap_is_at_least() {
+        // 08:00 On, next reading 11:00 Off (3 h gap, e.g. the Mac slept)
+        let (mut m, now) = live(&[("2026-10-18 08:00", ON), ("2026-10-18 11:00", OFF)]);
+        history(&mut m, BTreeMap::new(), at("2026-10-18 11:00"));
+        assert_eq!(detail(&m, now).as_deref(), Some("Since at least 11:00\u{a0}AM"));
+        // the boundary: 10 min is still "seen live", 11 is not
+        let (mut m, now) = live(&[("2026-10-18 10:50", ON), ("2026-10-18 11:00", OFF)]);
+        history(&mut m, BTreeMap::new(), at("2026-10-18 11:00"));
+        assert_eq!(detail(&m, now).as_deref(), Some("Since 11:00\u{a0}AM (0 min)"));
+        let (mut m, now) = live(&[("2026-10-18 10:49", ON), ("2026-10-18 11:00", OFF)]);
+        history(&mut m, BTreeMap::new(), at("2026-10-18 11:00"));
+        assert_eq!(detail(&m, now).as_deref(), Some("Since at least 11:00\u{a0}AM"));
+    }
+
+    #[test]
+    fn since_unknown_then_off_is_at_least() {
+        let (mut m, now) = live(&[("2026-10-18 07:37", GridSignal::Disagree), ("2026-10-18 07:42", OFF)]);
+        history(&mut m, BTreeMap::new(), at("2026-10-18 07:42"));
+        assert_eq!(detail(&m, now).as_deref(), Some("Since at least 7:42\u{a0}AM"));
+    }
+
+    #[test]
+    fn since_no_battery_station() {
+        let t0 = Instant::now();
+        let at = |hm: &str| format!("10/18/2026 {hm}:00");
+        let (m, el) = off_no_battery(t0, &at);
+        assert_eq!(detail(&m, el).as_deref(), Some("Since 7:42\u{a0}AM (38 min)"), "seen live");
+        let mut m = Monitor::new(true);
+        m.on_reading(reading(&at("08:20"), GridSignal::Off, None), t0);
+        assert_eq!(detail(&m, t0).as_deref(), Some("Since at least 8:20\u{a0}AM"), "first reading off");
+    }
+
+    #[test]
+    fn since_history_failed() {
+        let (mut m, now) = live(&[("2026-10-18 11:58", OFF)]);
+        history(&mut m, BTreeMap::new(), at("2026-10-18 11:58"));
+        assert_eq!(detail(&m, now).as_deref(), Some("Since at least 11:58\u{a0}AM"));
+    }
+
+    #[test]
+    fn since_history_stale_keeps_start() {
+        let (mut m, now) = live(&[("2026-10-18 11:22", OFF)]);
+        history(&mut m, days_from(&table(), day("2026-10-13 00:00"), at("2026-10-18 11:22")), at("2026-10-18 11:22"));
+        // live goes on to 11:37, history's newest point stays 11:22 (15 min old)
+        let now = now + Duration::from_secs(15 * 60);
+        m.on_reading(reading(&ts("2026-10-18 11:37"), OFF, Some((70.0, 900.0))), now);
+        history(&mut m, BTreeMap::new(), at("2026-10-18 11:37"));
+        assert_eq!(m.hist_start, HistStart::Stale);
+        assert_eq!(detail(&m, now).as_deref(), Some("Since 9:07\u{a0}AM (2h 30m)"));
+    }
+
+    #[test]
+    fn since_history_stale_no_start() {
+        let (mut m, now) = live(&[("2026-10-18 11:22", OFF)]);
+        history(&mut m, days_from(&table(), day("2026-10-13 00:00"), at("2026-10-18 11:00")), at("2026-10-18 11:22"));
+        assert_eq!(detail(&m, now).as_deref(), Some("Since at least 11:22\u{a0}AM"));
+        // seen live: S7a
+        let (mut m, now) = live(&[("2026-10-18 11:17", ON), ("2026-10-18 11:22", OFF)]);
+        history(&mut m, days_from(&table(), day("2026-10-13 00:00"), at("2026-10-18 11:00")), at("2026-10-18 11:22"));
+        assert_eq!(detail(&m, now).as_deref(), Some("Since 11:22\u{a0}AM (0 min)"));
+    }
+
+    #[test]
+    fn since_loading_title_only() {
+        let (m, now) = live(&[("2026-10-18 11:22", OFF)]);
+        let st = panel(&m, now, false).status;
+        assert_eq!((st.title, st.detail, st.back), ("Grid off", None, None));
+    }
+
+    #[test]
+    fn since_live_on_wins() {
+        let (mut m, now) = live(&[("2026-10-18 11:22", ON)]);
+        history(&mut m, days_from(&table(), day("2026-10-13 00:00"), at("2026-10-18 11:22")), at("2026-10-18 11:22"));
+        let st = panel(&m, now, false).status;
+        assert_eq!((st.kind, st.detail, st.back), ("on", None, None));
+        assert_eq!(m.since_start, None);
+    }
+
+    #[test]
+    fn since_forgotten_after_grid_back() {
+        // table-driven 10-14: 09:08–12:03, then 13:35–16:31
+        let tb = table();
+        let (mut m, now) = live(&[("2026-10-14 11:22", OFF)]);
+        history(&mut m, days_from(&tb, day("2026-10-09 00:00"), at("2026-10-14 11:22")), at("2026-10-14 11:22"));
+        assert_eq!(detail(&m, now).as_deref(), Some("Since 9:08\u{a0}AM (2h 14m)"));
+        let now = now + Duration::from_secs(48 * 60);
+        m.on_reading(reading(&ts("2026-10-14 12:10"), ON, Some((60.0, -3000.0))), now);
+        assert_eq!(m.since_start, None);
+        let now = now + Duration::from_secs(95 * 60);
+        m.on_reading(reading(&ts("2026-10-14 13:45"), OFF, Some((90.0, 900.0))), now);
+        history(&mut m, days_from(&tb, day("2026-10-09 00:00"), at("2026-10-14 13:45")), at("2026-10-14 13:45"));
+        assert_eq!(detail(&m, now).as_deref(), Some("Since 1:35\u{a0}PM (10 min)"));
+    }
+
+    #[test]
+    fn since_flicker_missed_by_live() {
+        // made-up: first off reading 09:08; history off 09:07–09:59, on 10:00–10:07, off from 10:08
+        let (mut m, now) = live(&[("2026-10-18 09:00", ON), ("2026-10-18 09:08", OFF), ("2026-10-18 10:20", OFF)]);
+        let tb = [(at("2026-10-18 09:07"), at("2026-10-18 09:59")), (at("2026-10-18 10:08"), at("2026-10-18 11:00"))];
+        history(&mut m, days_from(&tb, day("2026-10-18 00:00"), at("2026-10-18 10:20")), at("2026-10-18 10:20"));
+        assert_eq!(detail(&m, now).as_deref(), Some("Since 10:08\u{a0}AM (12 min)"));
+    }
+
+    #[test]
+    fn back_kept_while_stale() {
+        // R1, real (table-driven series): 10-14 11:22 → 12:00; at 11:40 with no data since 11:22 → kept
+        let (mut m, now) = live(&[("2026-10-14 11:22", OFF)]);
+        history(&mut m, days_from(&table(), day("2026-10-09 00:00"), at("2026-10-14 11:22")), at("2026-10-14 11:22"));
+        let st = panel(&m, now, false).status;
+        assert_eq!(st.back.as_deref(), Some("Usually back around 12:00\u{a0}PM (last 5 days)"));
+        let later = now + Duration::from_secs(18 * 60);
+        let p = panel(&m, later, false);
+        assert!(p.updated.unwrap().stale);
+        assert_eq!(p.status.detail.as_deref(), Some("Since 9:08\u{a0}AM (2h 32m)"));
+        assert_eq!(p.status.back.as_deref(), Some("Usually back around 12:00\u{a0}PM (last 5 days)"));
+    }
+
+    #[test]
+    fn back_absent_without_history_start() {
+        let tb = table();
+        let r1 = || days_from(&tb, day("2026-10-09 00:00"), at("2026-10-14 11:22"));
+        // S1: the first history call is still out
+        let (m, now) = live(&[("2026-10-14 11:22", OFF)]);
+        assert_eq!(panel(&m, now, false).status.back, None);
+        // S7: today's call failed, the 5 past days are there
+        let (mut m, now) = live(&[("2026-10-14 11:22", OFF)]);
+        let mut d = r1();
+        d.remove(&day("2026-10-14 00:00"));
+        history(&mut m, d, at("2026-10-14 11:22"));
+        let st = panel(&m, now, false).status;
+        assert_eq!((st.detail.as_deref(), st.back), (Some("Since at least 11:22\u{a0}AM"), None));
+        // a past day missing: no "(last 5 days)" line
+        let (mut m, now) = live(&[("2026-10-14 11:22", OFF)]);
+        let mut d = r1();
+        d.remove(&day("2026-10-11 00:00"));
+        history(&mut m, d, at("2026-10-14 11:22"));
+        let st = panel(&m, now, false).status;
+        assert_eq!((st.detail.as_deref(), st.back), (Some("Since 9:08\u{a0}AM (2h 14m)"), None));
+        // S4 and S5 are covered in since_two_day_cap and since_yesterday_call_failed
+    }
+
+    #[test]
+    fn back_absent_when_grid_on() {
+        let (mut m, now) = live(&[("2026-10-14 11:22", ON)]);
+        history(&mut m, days_from(&table(), day("2026-10-09 00:00"), at("2026-10-14 11:22")), at("2026-10-14 11:22"));
+        assert_eq!(panel(&m, now, false).status.back, None);
+    }
+
+    #[test]
+    fn next_cut_absent_when_grid_off_or_unknown() {
+        let d = || days_from(&table(), day("2026-10-13 00:00"), at("2026-10-18 12:10"));
+        let (mut m, now) = live(&[("2026-10-18 12:10", ON)]);
+        history(&mut m, d(), at("2026-10-18 12:10"));
+        let st = panel(&m, now, false).status;
+        assert_eq!(st.next, Some(["Next cut usually around 1:35\u{a0}PM".to_owned(), "back around 4:30\u{a0}PM (last 5 days)".to_owned()]));
+        for g in [OFF, GridSignal::Disagree] {
+            let (mut m, now) = live(&[("2026-10-18 12:10", g)]);
+            history(&mut m, d(), at("2026-10-18 12:10"));
+            assert_eq!(panel(&m, now, false).status.next, None, "{g:?}");
+        }
+        // signed out / first reading: no next
+        assert_eq!(panel(&Monitor::new(false), now, false).status.next, None);
+        assert_eq!(panel(&Monitor::new(true), now, false).status.next, None);
+    }
+
+    #[test]
+    fn next_cut_absent_without_history() {
+        let d = || days_from(&table(), day("2026-10-13 00:00"), at("2026-10-18 12:10"));
+        // not loaded yet
+        let (m, now) = live(&[("2026-10-18 12:10", ON)]);
+        assert_eq!(panel(&m, now, false).status.next, None);
+        // one past day missing
+        let (mut m, now) = live(&[("2026-10-18 12:10", ON)]);
+        let mut x = d();
+        x.remove(&day("2026-10-15 00:00"));
+        history(&mut m, x, at("2026-10-18 12:10"));
+        assert_eq!(panel(&m, now, false).status.next, None);
+        // today's history missing (a "done" cut couldn't be seen)
+        let (mut m, now) = live(&[("2026-10-18 12:10", ON)]);
+        let mut x = d();
+        x.remove(&day("2026-10-18 00:00"));
+        history(&mut m, x, at("2026-10-18 12:10"));
+        assert_eq!(panel(&m, now, false).status.next, None);
     }
 
     #[test]
@@ -241,10 +610,14 @@ mod tests {
         let mut m = Monitor::new(true);
         m.on_reading(reading("10/18/2026 08:20:00", GridSignal::On, Some((91.0, 0.0))), Instant::now());
         let v = serde_json::to_value(panel(&m, Instant::now(), true)).unwrap();
-        for k in ["status", "battery", "updated", "notificationsOff", "chart", "signedIn"] {
+        for k in ["status", "battery", "updated", "notificationsOff", "chart", "signedIn", "refreshing"] {
             assert!(v.get(k).is_some(), "missing {k}");
         }
-        assert_eq!(v["status"], serde_json::json!({ "kind": "on", "title": "Grid on" }));
+        assert!(v.get("account").is_none(), "account only when known");
+        assert_eq!(v["chart"]["day"], "18 Oct");
+        assert_eq!(v["status"], serde_json::json!({ "kind": "on", "title": "Grid on" }), "back and next only when set");
+        let st = Status { kind: "off", title: "Grid off", detail: Some("d".into()), back: Some("b".into()), next: Some(["1".into(), "2".into()]) };
+        assert_eq!(serde_json::to_value(st).unwrap(), serde_json::json!({ "kind": "off", "title": "Grid off", "detail": "d", "back": "b", "next": ["1", "2"] }));
         assert!(v["battery"].get("left").is_none());
     }
 
@@ -351,9 +724,158 @@ mod tests {
         println!("{} states → {path}", out.len());
     }
 
+    #[test]
+    fn account_shown_when_signed_in() {
+        let (mut m, now) = live(&[("2026-10-18 11:22", ON)]);
+        m.account = Some("name@example.com".into());
+        let p = panel(&m, now, false);
+        assert_eq!(p.account.as_deref(), Some("name@example.com"));
+        assert_eq!(serde_json::to_value(&p).unwrap()["account"], "name@example.com");
+    }
+
+    #[test]
+    fn account_absent_when_signed_out() {
+        let (mut m, now) = live(&[("2026-10-18 11:22", ON)]);
+        m.account = Some("name@example.com".into());
+        m.signed_in = false; // e.g. WrongLogin before the reset
+        assert_eq!(panel(&m, now, false).account, None);
+        m.reset(false);
+        let p = panel(&m, now, false);
+        assert_eq!((p.signed_in, p.account, p.status.kind), (false, None, "signedout"));
+    }
+
+    #[test]
+    fn account_absent_before_keychain() {
+        // launch: Monitor::new(true), the Keychain hasn't answered (no credentials in the client yet)
+        let p = panel(&Monitor::new(true), Instant::now(), false);
+        assert_eq!((p.signed_in, p.account), (true, None));
+    }
+
+    #[test]
+    fn refreshing_marks_freshness_line() {
+        let (mut m, now) = live(&[("2026-10-18 11:22", ON)]);
+        assert_eq!(m.ask_refresh(), Some(true));
+        let p = panel(&m, now, false);
+        assert!(p.refreshing);
+        assert_eq!(p.updated.unwrap().text, "Updated 11:22\u{a0}AM · refreshing…");
+        let p = panel(&m, now + 15 * MIN, false);
+        assert_eq!(p.updated.unwrap().text, "No new data since 11:22\u{a0}AM · refreshing…");
+        m.user_poll = false;
+        let p = panel(&m, now, false);
+        assert!(!p.refreshing);
+        assert_eq!(p.updated.unwrap().text, "Updated 11:22\u{a0}AM");
+        // signed out never spins
+        let mut m = Monitor::new(false);
+        m.user_poll = true;
+        assert!(!panel(&m, now, false).refreshing);
+    }
+
+    /// The designer's battery story for a day (mockups/panel/demo-data.js `series`): grid on/off
+    /// from the real table; off → the battery carries ~0.9 kW, on → charges at 3.8 kW until full,
+    /// then idles at +0.03 kW. 2-min points from 00:00 to minute `upto`, minus `holes`.
+    fn demo_series(tb: &[(i64, i64)], d0: i64, upto: u32, holes: &[(u32, u32)]) -> Vec<(u32, f64, f64)> {
+        let (mut soc, mut full, mut pts) = (70.0_f64, false, vec![]);
+        let mut t = d0 - DAY;
+        while t <= d0 + upto as i64 {
+            let off = tb.iter().any(|o| t >= o.0 && t < o.1);
+            let m = t - d0;
+            if off { full = false } else if soc >= 99.5 { full = true }
+            let tf = t as f64;
+            let k = if off { if soc <= 10.0 { 0.0 } else { ((0.9 + 0.06 * (tf / 3.0).sin() + 0.04 * (tf / 11.0).sin()) * 100.0).round() / 100.0 } } else if full { 0.03 } else { -3.8 };
+            if !(full && !off) { soc = (soc - k * (2.0 / 60.0) / 5.1 * 100.0).clamp(10.0, 100.0) }
+            if m >= 0 && !holes.iter().any(|&(a, b)| m > a as i64 && m < b as i64) { pts.push((m as u32, soc.round(), k)) }
+            t += 2;
+        }
+        pts
+    }
+
+    /// T-002 Build shots: every hand-off state built through Monitor + view (real table history,
+    /// the rules' own lines), with the shot harness's action. Account is made up.
+    /// Run: GW_FIXTURES=<file> cargo test … write_t002_fixtures -- --ignored
+    #[test]
+    #[ignore]
+    fn write_t002_fixtures() {
+        use crate::sems::ChartSeries;
+        use serde_json::json;
+        let tb = table();
+        // Monitor at `date time`; `last` = time of the last reading (stale when earlier); `hist` = the
+        // history table (None: the first call hasn't answered); chart `None` = loading.
+        let build = |date: &str, time: &str, last: Option<&str>, sig: GridSignal, hist: Option<&[(i64, i64)]>, holes: &[(u32, u32)]| {
+            let (now_abs, d0) = (at(&format!("{date} {}", last.unwrap_or(time))), at(&format!("{date} 00:00")));
+            let pts = demo_series(&tb, d0, (now_abs - d0) as u32, holes);
+            let p = *pts.last().unwrap();
+            let t0 = Instant::now();
+            let mut m = Monitor::new(true);
+            m.account = Some("name@example.com".into());
+            m.on_reading(reading(&ts(&format!("{date} {}", last.unwrap_or(time))), sig, Some((p.1, p.2 * 1000.0))), t0);
+            if let Some(h) = hist {
+                history(&mut m, days_from(h, now_abs.div_euclid(DAY) - 5, now_abs), now_abs);
+                m.on_chart(Some(ChartSeries { day: now_abs.div_euclid(DAY), points: pts }));
+            }
+            (m, t0 + Duration::from_secs(((at(&format!("{date} {time}")) - now_abs) * 60) as u64))
+        };
+        let off = |date: &str, time: &str, last: Option<&str>| build(date, time, last, OFF, Some(&tb), &[]);
+        let on = |date: &str, time: &str, last: Option<&str>| build(date, time, last, ON, Some(&tb), &[]);
+        let main = || off("2026-10-14", "11:22", None);
+        let mut out = serde_json::Map::new();
+        let mut put = |name: &str, (m, now): (Monitor, Instant), act: serde_json::Value| {
+            out.insert(name.into(), json!({ "panel": panel(&m, now, false), "act": act }));
+        };
+        let none = json!({});
+        put("grid-off-since-history", main(), none.clone());
+        put("grid-off-since-yesterday", off("2026-10-18", "00:40", None), none.clone());
+        // S7: history failed, the app's first reading already off; chart falls back to own readings
+        let (mut m, t0) = build("2026-10-14", "09:27", None, OFF, None, &[]);
+        let el = t0 + 3 * MIN;
+        m.on_reading(reading(&ts("2026-10-14 09:30"), OFF, Some((96.0, 900.0))), el);
+        history(&mut m, BTreeMap::new(), at("2026-10-14 09:30"));
+        m.on_chart(None);
+        put("grid-off-since-at-least", (m, el), none.clone());
+        put("grid-off-history-loading", build("2026-10-14", "11:22", None, OFF, None, &[]), none.clone());
+        put("grid-off-days-disagree", off("2026-10-18", "11:22", None), none.clone());
+        put("grid-off-usual-time-passed", off("2026-10-15", "12:20", None), none.clone());
+        put("grid-off-stale", off("2026-10-14", "11:40", Some("11:22")), none.clone());
+        for (n, min) in [("discharging", 551), ("charging", 150), ("middle", 336), ("right-edge", 664)] {
+            put(&format!("chart-hover-{n}"), main(), json!({ "chart": min }));
+        }
+        put("chart-hover-gap", build("2026-10-14", "06:30", None, ON, Some(&tb), &[(260, 320)]), json!({ "chart": 290 }));
+        put("chart-keyboard-focus", main(), json!({ "focus": "chart" }));
+        put("refresh-hover", main(), json!({ "refresh": "hover" }));
+        put("refresh-pressed", main(), json!({ "refresh": "press" }));
+        put("refresh-focus", main(), json!({ "focus": "refresh" }));
+        let (mut m, el) = main();
+        m.ask_refresh();
+        put("refreshing", (m, el), none.clone());
+        put("grid-on-next-cut", on("2026-10-18", "12:10", None), none.clone());
+        put("grid-on-next-cut-start-only", on("2026-10-18", "08:55", None), none.clone());
+        put("grid-on-cut-due", on("2026-10-16", "10:28", None), none.clone());
+        put("grid-on-cut-due-after-midnight", on("2026-10-16", "00:05", None), none.clone());
+        put("grid-on-cut-passed", on("2026-10-16", "02:30", None), none.clone());
+        put("grid-on-cut-done", on("2026-10-16", "21:10", None), none.clone());
+        put("grid-on-stale-cut-due", on("2026-10-16", "10:28", Some("10:10")), none.clone());
+        // made-up history: one cut a day, never 3 days in one 30-min window
+        let mixed: Vec<(i64, i64)> = [("13", "03:00", "04:00"), ("14", "08:00", "09:30"), ("15", "13:00", "14:30"), ("16", "17:00", "18:30"), ("17", "21:00", "22:00")]
+            .iter().map(|(d, a, b)| (at(&format!("2026-10-{d} {a}")), at(&format!("2026-10-{d} {b}")))).collect();
+        put("grid-on-days-disagree", build("2026-10-18", "08:55", None, ON, Some(&mixed), &[]), none.clone());
+        put("account-sign-out-hover", main(), json!({ "row": "signout" }));
+        let (mut m, el) = main();
+        m.account = Some("firstname.middlename.lastname@example-company.com".into());
+        put("account-long-email", (m, el), none.clone());
+        put("signed-out", (Monitor::new(false), Instant::now()), none.clone());
+        // Sign Out from the keyboard: the signed-in panel, focus on Sign Out, then the reset monitor's state
+        let (m, el) = main();
+        let before = serde_json::to_value(panel(&m, el, false)).unwrap();
+        let (mut m, el) = main();
+        m.reset(false);
+        put("signed-out-after-sign-out", (m, el), json!({ "before": before, "focus": "signout" }));
+        let path = std::env::var("GW_FIXTURES").unwrap_or_else(|_| std::env::temp_dir().join("gw-t002.json").to_string_lossy().into_owned());
+        std::fs::write(&path, serde_json::to_string_pretty(&out).unwrap()).unwrap();
+        println!("{} states → {path}", out.len());
+    }
+
     fn off_no_battery(t0: Instant, at: &dyn Fn(&str) -> String) -> (Monitor, Instant) {
         let mut m = Monitor::new(true);
-        m.on_reading(reading(&at("07:30"), GridSignal::On, None), t0);
+        m.on_reading(reading(&at("07:37"), GridSignal::On, None), t0);
         m.on_reading(reading(&at("07:42"), GridSignal::Off, None), t0);
         let el = t0 + Duration::from_secs(38 * 60);
         m.on_reading(reading(&at("08:20"), GridSignal::Off, None), el);

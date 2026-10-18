@@ -191,16 +191,27 @@ pub fn panel_height(win: WebviewWindow, h: f64) {
     let _ = win.set_size(LogicalSize::new(PANEL_W, h.ceil().clamp(40.0, 900.0)));
 }
 
-/// The panel's action rows and keys. Every action closes the panel.
+/// The panel's action rows, the Refresh button and keys. Refresh and Sign Out keep the panel
+/// open (you see the result); every other action closes it.
 #[tauri::command]
 pub fn panel_action(app: AppHandle, id: String) {
     match id.as_str() {
-        "close" | "refresh" => hide(&app, true),
+        "refresh" | "signout" => {}
+        "close" => hide(&app, true),
         _ => hide(&app, false),
     }
     match id.as_str() {
         "refresh" => {
-            let _ = app.state::<tokio::sync::mpsc::Sender<()>>().try_send(());
+            let start = app.state::<Arc<Mutex<Monitor>>>().lock().unwrap().ask_refresh();
+            let Some(start) = start else { return }; // one poll at a time
+            refresh(&app); // the spin, at once
+            if start {
+                let _ = app.state::<tokio::sync::mpsc::Sender<()>>().try_send(());
+            }
+        }
+        "signout" => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { sign_out(&app).await });
         }
         "quit" => app.exit(0),
         "logs" => {
@@ -222,5 +233,39 @@ pub fn panel_action(app: AppHandle, id: String) {
         "signin" => crate::signin::open(&app),
         // "close": hiding was all.
         _ => {}
+    }
+}
+
+/// Sign Out: the Keychain item, then the client, then the monitor; the panel stays open,
+/// signed out. A poll holding the client is waited for, but the panel signs out at once
+/// (the monitor's generation makes that poll drop its result).
+async fn sign_out(app: &AppHandle) {
+    let dir = app.state::<Shell>().log_dir.clone();
+    match tauri::async_runtime::spawn_blocking(crate::creds::delete).await {
+        Ok(Ok(())) => {}
+        // Still signed out for this run; the next launch would find the item. No account in the log.
+        Ok(Err(e)) => logdir::line(&dir, &format!("sign-out: keychain delete failed: {}", keychain_kind(&e))),
+        Err(_) => logdir::line(&dir, "sign-out: keychain delete failed: task"),
+    }
+    let client = app.state::<Arc<tokio::sync::Mutex<crate::sems::Client>>>().inner().clone();
+    let mut held = client.try_lock().ok();
+    if let Some(c) = held.as_mut() {
+        c.sign_out();
+    }
+    app.state::<Arc<Mutex<Monitor>>>().lock().unwrap().reset(false);
+    logdir::line(&dir, "signed out");
+    refresh(app);
+    if held.is_none() {
+        client.lock().await.sign_out();
+    }
+}
+
+/// The error's kind only: a keyring message may carry the item's attributes.
+fn keychain_kind(e: &keyring::Error) -> &'static str {
+    match e {
+        keyring::Error::PlatformFailure(_) => "platform failure",
+        keyring::Error::NoStorageAccess(_) => "no storage access",
+        keyring::Error::NoEntry => "no entry",
+        _ => "other",
     }
 }

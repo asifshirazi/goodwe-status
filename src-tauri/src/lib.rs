@@ -5,6 +5,7 @@ pub mod creds;
 pub mod logdir;
 pub mod monitor;
 pub mod notify;
+pub mod outages;
 pub mod rules;
 pub mod sems;
 pub mod shell;
@@ -66,7 +67,12 @@ pub fn run() {
                     if c.account().is_none() {
                         *c = sems::Client::new(creds);
                     }
-                    c.account().is_some()
+                    let account = c.account();
+                    let mut m = mon.lock().unwrap();
+                    if m.account.is_none() {
+                        m.account = account.clone();
+                    }
+                    account.is_some()
                 };
                 if !signed_in {
                     // First run, or the Keychain said no (e.g. Deny after an update): ask in the box.

@@ -41,10 +41,23 @@ impl LocalTs {
         let m = self.minute_of_day();
         format!("{:02}:{:02}", m / 60, m % 60)
     }
+    /// "1:36 PM", 12 h, no leading zero: what the user sees. A no-break space keeps AM/PM with
+    /// its time when a row wraps.
+    pub fn hhmm12(self) -> String {
+        let m = self.minute_of_day();
+        let h = m / 60;
+        format!("{}:{:02}\u{a0}{}", match h % 12 { 0 => 12, x => x }, m % 60, if h < 12 { "AM" } else { "PM" })
+    }
     /// "2026-10-18", for the SEMS+ chart call.
     pub fn date(self) -> String {
         let (y, m, d) = civil_from_days(self.day());
         format!("{y:04}-{m:02}-{d:02}")
+    }
+    /// "18 Oct", for the chart read-out.
+    pub fn day_month(self) -> String {
+        let (_, m, d) = civil_from_days(self.day());
+        let mon = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][(m - 1) as usize];
+        format!("{d} {mon}")
     }
     pub fn plus_secs(self, s: i64) -> LocalTs {
         LocalTs(self.0 + s)
@@ -93,6 +106,19 @@ mod tests {
         assert_eq!((t.date(), t.hhmm()), ("2027-01-01".into(), "00:01".into()));
         assert_eq!(LocalTs::parse("2028-02-29 00:00:00").unwrap().date(), "2028-02-29");
         assert_eq!(LocalTs::parse("1970-01-01 00:00:00"), Some(LocalTs(0)));
+    }
+
+    #[test]
+    fn twelve_hour_text() {
+        let t = |s: &str| LocalTs::parse(&format!("2026-10-18 {s}:00")).unwrap().hhmm12();
+        assert_eq!(t("00:00"), "12:00\u{a0}AM");
+        assert_eq!(t("00:59"), "12:59\u{a0}AM");
+        assert_eq!(t("01:05"), "1:05\u{a0}AM");
+        assert_eq!(t("11:59"), "11:59\u{a0}AM");
+        assert_eq!(t("12:05"), "12:05\u{a0}PM");
+        assert_eq!(t("13:36"), "1:36\u{a0}PM");
+        assert_eq!(t("23:58"), "11:58\u{a0}PM");
+        assert!(!t("13:36").contains(' '), "AM/PM must not wrap away from its time");
     }
 
     #[test]

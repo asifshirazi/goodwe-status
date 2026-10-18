@@ -1,19 +1,22 @@
 //! Everything the app knows about GoodWe SEMS lives here: URLs, headers, both logins,
 //! JSON field paths and the per-reading grid signal. The rest of the app sees only
-//! `Reading` and `ChartSeries`. When GoodWe changes their API, fix this file and add the
-//! new reply under src-tauri/tests/fixtures/ (the tests parse every sample).
+//! `Reading`, `ChartSeries` and `GridDay`. When GoodWe changes their API, fix this file and
+//! add the new reply under src-tauri/tests/fixtures/ (the tests parse every sample).
 //!
 //! Two APIs:
 //! - classic (`www.semsportal.com`): login + live reading (it has the grid voltage).
 //! - SEMS+ web gateway (`semsplus.goodwe.com`): its own login and a signed `X-Signature`
-//!   header; gives today's per-minute SOC and battery kW for the chart.
+//!   header; gives a day's per-minute SOC, battery, grid and load kW: the chart, and the
+//!   grid-off minutes the outage rules (outages.rs) work on.
 
 use crate::clock::LocalTs;
+use crate::outages::GridDay;
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use md5::Md5;
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const CLASSIC_LOGIN: &str = "https://www.semsportal.com/api/v2/Common/CrossLogin";
@@ -23,6 +26,11 @@ const PLUS_ORIGIN: &str = "https://semsplus.goodwe.com";
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 /// Below this the grid counts as off (design doc § Rules).
 const GRID_OFF_VOLTS: f64 = 50.0;
+/// SEMS+ off minute: pGrid exactly 0 and the battery carries the whole load (within this, kW).
+/// shortcut: assumes no PV (pSystem is 0 on this account); with PV add `pSystem == 0`.
+const OFF_BALANCE_KW: f64 = 0.02;
+/// An off minute with the house drawing more than this (kW) proves the run is an outage.
+const LOADED_KW: f64 = 0.05;
 
 // ---------- what the rest of the app sees ----------
 
@@ -65,6 +73,13 @@ pub struct ChartSeries {
     pub day: i64,
     /// (minute of day, soc %, battery kW; kW > 0 = discharging), sorted by minute.
     pub points: Vec<(u32, f64, f64)>,
+}
+
+/// One day's SEMS+ power reply, read two ways, so a bad `pGrid` never blanks the chart.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Day {
+    pub chart: Result<ChartSeries, SemsError>,
+    pub grid: Result<GridDay, SemsError>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -165,9 +180,41 @@ pub fn parse_reading(v: &Value) -> Result<Reading, String> {
 /// `hems/power/statisticsAndPreV2` reply → today's `ChartSeries` for `day`.
 /// Joins soc and pBat by `tp`, drops null and `isCE` points and anything not on `day`.
 pub fn parse_chart(v: &Value, day: i64) -> Result<ChartSeries, String> {
+    let series = plus_series(v, day)?;
+    let soc = series("soc")?;
+    let kw: HashMap<u32, f64> = series("pBat")?.into_iter().collect();
+    let mut points: Vec<_> = soc.into_iter().filter_map(|(m, s)| Some((m, s, *kw.get(&m)?))).collect();
+    points.sort_by_key(|p| p.0);
+    points.dedup_by_key(|p| p.0);
+    Ok(ChartSeries { day, points })
+}
+
+/// The same reply → the day's grid-off minutes (research rule: pGrid exactly 0 and pBat equal
+/// to pConsum). Joins the three series by `tp`, never by position.
+pub fn parse_grid_day(v: &Value, day: i64) -> Result<GridDay, String> {
+    let series = plus_series(v, day)?;
+    let (bat, load): (HashMap<u32, f64>, HashMap<u32, f64>) =
+        (series("pBat")?.into_iter().collect(), series("pConsum")?.into_iter().collect());
+    let joined: Vec<(u32, f64, f64, f64)> =
+        series("pGrid")?.into_iter().filter_map(|(m, g)| Some((m, g, *bat.get(&m)?, *load.get(&m)?))).collect();
+    let mut off: Vec<(u32, bool)> = joined
+        .iter()
+        .filter(|&&(_, g, b, c)| g == 0.0 && (b - c).abs() < OFF_BALANCE_KW)
+        .map(|&(m, _, _, c)| (m, c > LOADED_KW))
+        .collect();
+    off.sort_by_key(|p| p.0);
+    off.dedup_by_key(|p| p.0);
+    Ok(GridDay { off, newest: joined.iter().map(|p| p.0).max() })
+}
+
+/// (minute of day, value), one series of a SEMS+ power reply.
+type Points = Vec<(u32, f64)>;
+
+/// `item` → its points on `day`, without null and `isCE` points.
+fn plus_series(v: &Value, day: i64) -> Result<impl Fn(&str) -> Result<Points, String> + '_, String> {
     check_plus_code(v)?;
     let list = v["data"]["dataList"].as_array().ok_or_else(|| missing("data.dataList"))?;
-    let series = |item: &str| -> Result<Vec<(u32, f64)>, String> {
+    Ok(move |item: &str| {
         let s = list.iter().find(|s| s["item"] == item).ok_or_else(|| missing(&format!("dataList[item={item}]")))?;
         let pts = s["powerData"].as_array().ok_or_else(|| missing(&format!("{item}.powerData")))?;
         Ok(pts
@@ -178,13 +225,7 @@ pub fn parse_chart(v: &Value, day: i64) -> Result<ChartSeries, String> {
                 (t.day() == day).then_some((t.minute_of_day(), num(&p["power"])?))
             })
             .collect())
-    };
-    let soc = series("soc")?;
-    let kw: std::collections::HashMap<u32, f64> = series("pBat")?.into_iter().collect();
-    let mut points: Vec<_> = soc.into_iter().filter_map(|(m, s)| Some((m, s, *kw.get(&m)?))).collect();
-    points.sort_by_key(|p| p.0);
-    points.dedup_by_key(|p| p.0);
-    Ok(ChartSeries { day, points })
+    })
 }
 
 fn check_classic_code(v: &Value) -> Result<(), String> {
@@ -327,9 +368,10 @@ impl Client {
         Err(SemsError::Expired)
     }
 
-    /// Today's chart series from the SEMS+ gateway, for the station-local `today`.
-    pub async fn chart(&mut self, today: LocalTs, utc_offset_h: Option<f64>) -> Result<ChartSeries, SemsError> {
-        let date = today.date();
+    /// One station-local day from the SEMS+ gateway: today's chart and grid history in one
+    /// call, or a past day's grid history (T-002 5a: one call per day, a 6-day range comes back empty).
+    pub async fn day(&mut self, date: LocalTs, utc_offset_h: Option<f64>) -> Result<Day, SemsError> {
+        let (day, date) = (date.day(), date.date());
         // timeZone is required (an empty list without it); SEMS+ labels `tp` station-local anyway.
         let tz = utc_offset_h.unwrap_or(0.0).round() as i64;
         for attempt in 0..2 {
@@ -339,7 +381,7 @@ impl Client {
             }
             let s = self.plus.as_ref().expect("set above");
             let body = json!({
-                "stationId": s.station, "items": ["soc", "pBat"], "timeScale": 2, "timeZone": tz,
+                "stationId": s.station, "items": ["soc", "pBat", "pGrid", "pConsum"], "timeScale": 1, "timeZone": tz,
                 "startTime": format!("{date} 00:00:00"), "endTime": format!("{date} 23:59:59"),
             });
             let url = format!("{}/sems-plant/api/v1/hems/power/statisticsAndPreV2", s.api);
@@ -350,7 +392,8 @@ impl Client {
                 }
                 Err(e) => return Err(e),
                 Ok((v, raw)) => {
-                    return parse_chart(&v, today.day()).map_err(|reason| SemsError::Parse { reason, reply: raw })
+                    let bad = |reason: String| SemsError::Parse { reason, reply: raw.clone() };
+                    return Ok(Day { chart: parse_chart(&v, day).map_err(bad), grid: parse_grid_day(&v, day).map_err(bad) });
                 }
             }
         }
@@ -482,8 +525,13 @@ mod tests {
                 let day = LocalTs::parse(v["data"]["dataList"][0]["powerData"][0]["tp"].as_str().unwrap()).unwrap().day();
                 let c = parse_chart(&v, day).unwrap_or_else(|e| panic!("{name}: {e}"));
                 assert!(!c.points.is_empty(), "{name}: no points");
+            } else if name.starts_with("sems-plus-grid-history") {
+                // The reply sits under `reply`; the rest of the file is the test's outage table.
+                let day = LocalTs::parse("2026-10-18 00:00:00").unwrap().day();
+                let g = parse_grid_day(&v["reply"], day).unwrap_or_else(|e| panic!("{name}: {e}"));
+                assert!(!g.off.is_empty(), "{name}: no off minutes");
             } else {
-                panic!("{name}: unknown sample kind; name it monitor-detail-* or sems-plus-power-history-* and add a check");
+                panic!("{name}: unknown sample kind; name it monitor-detail-*, sems-plus-power-history-* or sems-plus-grid-history* and add a check");
             }
             n += 1;
         }
@@ -511,6 +559,36 @@ mod tests {
         assert!(c.points.windows(2).all(|w| w[0].0 < w[1].0));
         // another day's points are dropped
         assert!(parse_chart(&sample("sems-plus-power-history-day.json"), day + 1).unwrap().points.is_empty());
+    }
+
+    #[test]
+    fn grid_history_sample() {
+        let v = &sample("sems-plus-grid-history.json")["reply"];
+        let d18 = LocalTs::parse("2026-10-18 00:00:00").unwrap().day();
+        let g = parse_grid_day(v, d18).unwrap();
+        let off: Vec<u32> = g.off.iter().map(|p| p.0).collect();
+        let hm = |h: u32, m: u32| h * 60 + m;
+        // off from 00:00 (began 10-17 23:33) to 02:05; 09:07 is the first off minute of the morning cut
+        assert_eq!((off[0], off.contains(&hm(2, 5)), off.contains(&hm(2, 6))), (0, true, false));
+        assert_eq!(off.iter().find(|&&m| m > hm(9, 0)), Some(&hm(9, 7)));
+        // the cut ends 12:03; 12:10 is a lone zero minute (the rules ignore it); newest point 12:10
+        assert!(off.contains(&hm(12, 3)) && !off.contains(&hm(12, 4)) && off.contains(&hm(12, 10)));
+        assert_eq!(g.newest, Some(hm(12, 10)));
+        assert!(g.off.iter().all(|p| p.1), "the house drew load in every off minute");
+        let g17 = parse_grid_day(v, d18 - 1).unwrap();
+        assert_eq!(g17.off.first().map(|p| p.0), Some(hm(23, 33)));
+        // null and isCE points are dropped; a minute missing from one series is not joined
+        let mut v2 = v.clone();
+        assert_eq!(v2["data"]["dataList"][0]["item"], "pGrid");
+        let i = v2["data"]["dataList"][0]["powerData"].as_array().unwrap().iter().position(|p| p["tp"] == "2026-10-18 09:07:00").unwrap();
+        v2["data"]["dataList"][0]["powerData"][i]["power"] = Value::Null;
+        v2["data"]["dataList"][0]["powerData"][i + 1]["isCE"] = json!(true);
+        let g2 = parse_grid_day(&v2, d18).unwrap();
+        assert!(!g2.off.iter().any(|p| p.0 == hm(9, 7) || p.0 == hm(9, 8)));
+        assert!(g2.off.iter().any(|p| p.0 == hm(9, 9)));
+        // a reply without pGrid is unreadable, not "no outages"
+        v2["data"]["dataList"][0]["item"] = json!("x");
+        assert_eq!(parse_grid_day(&v2, d18).unwrap_err(), "field `dataList[item=pGrid]` missing");
     }
 
     #[test]
@@ -578,12 +656,32 @@ mod tests {
         c.sign_in(Credentials { account: get("SEMS_ACCOUNT"), password: get("SEMS_PASSWORD") }).await.unwrap_or_else(|e| panic!("{e}")); // Display never shows the reply body
         let r = c.reading().await.unwrap_or_else(|e| panic!("{e}"));
         println!("reading at {} {}: grid {:?} (vac1 {}, status {:?}), battery {:?}", r.time.date(), r.time.hhmm(), r.grid, r.vac1, r.grid_status, r.battery);
-        let ch = c.chart(r.time, r.utc_offset_h).await.unwrap_or_else(|e| panic!("{e}"));
-        println!("chart: {} points, first {:?}, last {:?}", ch.points.len(), ch.points.first(), ch.points.last());
+        let d = c.day(r.time, r.utc_offset_h).await.unwrap_or_else(|e| panic!("{e}"));
+        let ch = d.chart.unwrap_or_else(|e| panic!("{e}"));
+        println!("chart (timeScale 1): {} points, first {:?}, last {:?}", ch.points.len(), ch.points.first(), ch.points.last());
+        // T-002: today's history from the same call, then yesterday as a past-day call.
+        let mut days = std::collections::BTreeMap::new();
+        days.insert(r.time.day(), d.grid.unwrap_or_else(|e| panic!("{e}")));
+        let y = LocalTs((r.time.day() - 1) * 86_400);
+        let yd = c.day(y, r.utc_offset_h).await.unwrap_or_else(|e| panic!("{e}"));
+        days.insert(y.day(), yd.grid.unwrap_or_else(|e| panic!("{e}")));
+        for (day, g) in &days {
+            println!("history {}: newest {:?}, {} off minutes", LocalTs(day * 86_400).date(), g.newest, g.off.len());
+        }
+        let now = r.time.0 / 60;
+        for o in crate::outages::outages(&days, r.time.day()) {
+            println!("outage {} {} to {} {}{}", LocalTs(o.start * 60).date(), LocalTs(o.start * 60).hhmm(), LocalTs(o.end * 60).date(), LocalTs(o.end * 60).hhmm(), if o.running { " (running)" } else { "" });
+        }
+        match crate::outages::history_start(&days, now) {
+            crate::outages::HistStart::Start(s) => println!("history start now: {}", crate::outages::since_text(s, now)),
+            h => println!("history start now: {h:?}"),
+        }
         let same = c.classic.as_ref().unwrap().station == c.plus.as_ref().unwrap().station;
         println!("classic and SEMS+ station ids equal: {same}");
-        let leaked = std::fs::read_to_string(samples_dir().join("monitor-detail-grid-off.json")).unwrap().contains(&c.classic.as_ref().unwrap().station);
-        println!("live station id present in the saved sample: {leaked}");
+        let station = &c.classic.as_ref().unwrap().station;
+        let leaked = std::fs::read_dir(samples_dir()).unwrap().filter(|e| std::fs::read_to_string(e.as_ref().unwrap().path()).unwrap().contains(station.as_str())).count();
+        println!("live station id present in {leaked} saved samples");
+        assert_eq!(leaked, 0);
 
         // B-R1: a dump of the live reply keeps none of the personal values (never printed).
         let st = c.classic.as_ref().unwrap();

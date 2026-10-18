@@ -9,12 +9,21 @@
   --gw-highlight:#0063E1; --gw-on-highlight:#FFFFFF; --gw-red:#FF3B30;
   --gw-soc:#0062CC; --gw-kw:#A84A00; --gw-kw-fill:rgba(168,74,0,.14); --gw-plot-text:rgba(0,0,0,.60);
   --gw-s1:4px; --gw-s2:8px; --gw-s3:12px; --gw-radius:12px; --gw-row-radius:6px;
+  /* T-002 */
+  --gw-fill-hover:rgba(0,0,0,.07); --gw-fill-press:rgba(0,0,0,.13);
+  --gw-tip-bg:rgba(255,255,255,.97); --gw-tip-edge:rgba(0,0,0,.10); --gw-cursor:rgba(0,0,0,.45); --gw-dot-ring:#FFFFFF;
+  --gw-tip-shadow:0 4px 12px rgba(0,0,0,.18),0 1px 3px rgba(0,0,0,.12); --gw-focus:#0063E1;
+  --gw-spin:800ms; --gw-press:150ms;
 }
 @media (prefers-color-scheme: dark){
   .gw-panel{
     --gw-label:rgba(255,255,255,.88); --gw-label-2:rgba(255,255,255,.60); --gw-label-3:rgba(255,255,255,.30);
     --gw-separator:rgba(255,255,255,.12); --gw-panel-bg:rgba(44,44,46,.86); --gw-panel-edge:rgba(255,255,255,.16);
     --gw-soc:#409CFF; --gw-kw:#FF9F0A; --gw-kw-fill:rgba(255,159,10,.16); --gw-plot-text:rgba(255,255,255,.60);
+    /* T-002 */
+    --gw-fill-hover:rgba(255,255,255,.10); --gw-fill-press:rgba(255,255,255,.18);
+    --gw-tip-bg:rgba(58,58,60,.97); --gw-tip-edge:rgba(255,255,255,.14); --gw-cursor:rgba(255,255,255,.50); --gw-dot-ring:#2C2C2E;
+    --gw-tip-shadow:0 4px 12px rgba(0,0,0,.45),0 1px 3px rgba(0,0,0,.35); --gw-focus:#409CFF;
   }
 }
 
@@ -69,3 +78,47 @@
 .gw-act:focus-visible .gw-ic,.gw-act:focus-visible .k{color:var(--gw-on-highlight)}
 .gw-act[aria-disabled="true"],.gw-act[aria-disabled="true"] .gw-ic,.gw-act[aria-disabled="true"] .k{color:var(--gw-label-3)}
 @media (forced-colors: active){ .gw-act:focus-visible{outline:2px solid Highlight} }
+
+/* ---- T-002 ---- */
+
+/* Refresh: icon-only button at the top right of the first row. 24 pt target, 16 pt glyph.
+   Off-scale margins on purpose: −2 top/bottom keeps the row 20 pt (24 − 20); −6 right puts the glyph's ink on the text edge. */
+.gw-icon-btn{all:unset;flex:none;display:grid;place-items:center;width:24px;height:24px;margin:-2px -6px -2px 0;border-radius:var(--gw-row-radius);
+  color:var(--gw-label-2);transition:background-color var(--gw-press) ease-out,scale var(--gw-press) ease-out}
+.gw-icon-btn .gw-ic{color:inherit}
+@media (hover:hover){ .gw-icon-btn:not([aria-disabled="true"]):hover{background:var(--gw-fill-hover);color:var(--gw-label)} }
+.gw-icon-btn:not([aria-disabled="true"]):active{background:var(--gw-fill-press);color:var(--gw-label)}
+@media (prefers-reduced-motion:no-preference){ .gw-icon-btn:not([aria-disabled="true"]):active{scale:.96} }
+.gw-icon-btn:focus-visible{outline:2px solid var(--gw-focus);outline-offset:0}
+.gw-icon-btn[aria-disabled="true"]{color:var(--gw-label-3)}
+.gw-icon-btn.is-busy{color:var(--gw-label-2)}
+.gw-icon-btn.is-busy .gw-ic{animation:gw-spin var(--gw-spin) linear infinite}
+@media (prefers-reduced-motion:reduce){ .gw-icon-btn.is-busy .gw-ic{animation:gw-pulse 1.2s ease-in-out infinite alternate} }
+@keyframes gw-spin{to{rotate:360deg}}
+@keyframes gw-pulse{from{opacity:1}to{opacity:.35}}
+
+/* Chart read-out: the whole plot is the target (HIG Charts). */
+.gw-plot{position:relative;border-radius:4px;outline:none;cursor:default;touch-action:none}
+.gw-plot[data-plot]:focus-visible{outline:2px solid var(--gw-focus);outline-offset:2px}
+.gw-chart .cur-line{stroke:var(--gw-cursor);stroke-width:1;shape-rendering:crispEdges}
+.gw-chart .cur-soc{fill:var(--gw-soc);stroke:var(--gw-dot-ring);stroke-width:1.5}
+.gw-chart .cur-kw{fill:var(--gw-kw);stroke:var(--gw-dot-ring);stroke-width:1.5}
+/* Max 156 pt so one side of the line always has room (see TIP_GAP / TIP_PAD in panel.js). */
+.gw-tip{position:absolute;z-index:1;box-sizing:border-box;min-width:120px;max-width:156px;padding:var(--gw-s1) var(--gw-s2);border-radius:var(--gw-s2);pointer-events:none;
+  background:var(--gw-tip-bg);border:1px solid transparent;
+  box-shadow:0 0 0 .5px var(--gw-tip-edge),var(--gw-tip-shadow);
+  font-size:12px;line-height:16px;color:var(--gw-label);white-space:nowrap}
+.gw-tip[hidden]{display:none}
+.gw-tip-time{font-size:11px;line-height:14px;color:var(--gw-label-2);margin-bottom:var(--gw-s1) !important}
+.gw-tip-row{display:flex;align-items:center;gap:var(--gw-s1)}
+.gw-tip-row i{flex:none;width:8px;height:2px;border-radius:1px}
+.gw-tip-row i.soc{background:var(--gw-soc)} .gw-tip-row i.kw{background:var(--gw-kw)}
+.gw-tip-row span{color:var(--gw-label-2);flex:1}
+.gw-tip-row b{font-weight:600;margin-left:var(--gw-s2)}
+.gw-tip-none{color:var(--gw-label-2)}
+@media (forced-colors:active){ .gw-tip{border-color:CanvasText} .gw-plot[data-plot]:focus-visible,.gw-icon-btn:focus-visible{outline-color:Highlight} }
+
+/* Account line (item 6): quiet text above Sign Out, text column of the rows (10 + 16 + 8 = 34), not focusable.
+   One line: "Signed in as" never shrinks; a long email ends in "…" (full one in the title tooltip and to VoiceOver). */
+.gw-acct{display:flex;min-width:0;height:22px;align-items:center;padding:0 var(--gw-s3) 0 34px;font-size:12px;color:var(--gw-label-2);white-space:nowrap;cursor:default}
+.gw-acct span{min-width:0;overflow:hidden;text-overflow:ellipsis;margin-left:.3em}

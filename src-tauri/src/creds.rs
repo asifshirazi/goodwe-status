@@ -21,3 +21,11 @@ pub fn load() -> Option<Credentials> {
 pub fn save(c: &Credentials) -> keyring::Result<()> {
     entry()?.set_password(&json!({ "account": c.account, "password": c.password }).to_string())
 }
+
+/// Sign Out: removes the item. Nothing stored is fine.
+pub fn delete() -> keyring::Result<()> {
+    match entry()?.delete_credential() {
+        Err(keyring::Error::NoEntry) => Ok(()),
+        r => r,
+    }
+}

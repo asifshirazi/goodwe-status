@@ -2,9 +2,11 @@
 //! read a `Monitor` and react to `PollReport`s; tests drive it with a fake `Source`.
 
 use crate::clock::LocalTs;
+use crate::outages::{self, GridDay, HistStart, Outage, DAY, PAST_DAYS};
 use crate::rules::{self, ChartSource, GridState};
-use crate::sems::{self, ChartSeries, GridSignal, Reading, SemsError};
+use crate::sems::{self, ChartSeries, Day, GridSignal, Reading, SemsError};
 use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -15,7 +17,8 @@ pub trait Source: Send {
     fn signed_in(&self) -> bool;
     fn sign_out(&mut self);
     fn reading(&mut self) -> impl Future<Output = Result<Reading, SemsError>> + Send;
-    fn chart(&mut self, today: LocalTs, utc_offset_h: Option<f64>) -> impl Future<Output = Result<ChartSeries, SemsError>> + Send;
+    /// One station-local day: today's chart and grid history, or a past day's history.
+    fn day(&mut self, date: LocalTs, utc_offset_h: Option<f64>) -> impl Future<Output = Result<Day, SemsError>> + Send;
 }
 
 impl Source for sems::Client {
@@ -28,13 +31,22 @@ impl Source for sems::Client {
     async fn reading(&mut self) -> Result<Reading, SemsError> {
         sems::Client::reading(self).await
     }
-    async fn chart(&mut self, today: LocalTs, utc_offset_h: Option<f64>) -> Result<ChartSeries, SemsError> {
-        sems::Client::chart(self, today, utc_offset_h).await
+    async fn day(&mut self, date: LocalTs, utc_offset_h: Option<f64>) -> Result<Day, SemsError> {
+        sems::Client::day(self, date, utc_offset_h).await
     }
 }
 
+/// A past day is fetched for good once the station clock is this far past its end (the reply
+/// runs about 2 minutes behind, so a fetch at 00:01 would miss 23:58 and 23:59).
+const DAY_FINAL_AFTER_MIN: i64 = 10;
+/// Past days fetched per poll at most (cold start: 5 days over two polls).
+const DAYS_PER_POLL: usize = 3;
+/// S7a: the On reading before the first Off one must be this close for an exact "Since 7:42 AM"
+/// (an On reading hours older, e.g. the Mac slept, doesn't show when the cut began).
+const SEEN_LIVE_MAX_GAP_S: i64 = 600;
+
 /// When the app first saw the grid off. `exact` is false when it was already off at the
-/// first reading after launch ("Since at least 08:20").
+/// first reading after launch, or the reading before wasn't a recent On ("Since at least 8:20 AM").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct OffSince {
     pub at: LocalTs,
@@ -66,6 +78,8 @@ pub struct ChartView {
     pub now: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub since: Option<String>,
+    /// Station-local date of the chart, "18 Oct" (read-out line 1).
+    pub day: String,
     pub gap: u32,
     pub points: Vec<(u32, f64, f64)>,
 }
@@ -85,6 +99,24 @@ pub struct Monitor {
     own: Vec<(LocalTs, f64, f64)>,
     plus: Option<ChartSeries>,
     plus_failed: bool,
+    /// SEMS+ grid history per station-local day (`LocalTs::day`): today and the 5 days before.
+    history: BTreeMap<i64, GridDay>,
+    /// Past days fetched after they ended: never fetched again.
+    history_final: BTreeSet<i64>,
+    /// The first history call of this run has answered or failed (Since rule S1).
+    pub history_tried: bool,
+    /// What history said at the last poll about the current outage's start.
+    pub hist_start: HistStart,
+    /// The current outage's start from history (S2/S3), kept while history is stale (S6).
+    pub since_start: Option<i64>,
+    /// The signed-in SEMS account (Credentials.account) for the panel's footer. Never logged.
+    pub account: Option<String>,
+    /// A poll is running.
+    pub polling: bool,
+    /// The running (or next) poll was started by the user (Refresh, ⌘R, sign-in): the icon spins.
+    pub user_poll: bool,
+    /// Bumped on sign-out and on a new account: a poll that began before drops its result.
+    gen: u64,
 }
 
 impl Monitor {
@@ -100,7 +132,33 @@ impl Monitor {
             own: Vec::new(),
             plus: None,
             plus_failed: false,
+            history: BTreeMap::new(),
+            history_final: BTreeSet::new(),
+            history_tried: false,
+            hist_start: HistStart::Stale,
+            since_start: None,
+            account: None,
+            polling: false,
+            user_poll: false,
+            gen: 0,
         }
+    }
+
+    /// Sign Out (or another account signs in): a fresh monitor. Keeps the poll flag, and bumps
+    /// `gen` so a poll already running drops its result instead of signing the panel back in.
+    pub fn reset(&mut self, signed_in: bool) {
+        *self = Monitor { polling: self.polling, gen: self.gen + 1, ..Monitor::new(signed_in) };
+    }
+
+    /// Refresh click or ⌘R. `None`: ignore it (signed out, or a user poll already runs).
+    /// `Some(start)`: show the spin now; `start` = no poll is running, so start one (a running
+    /// timer poll becomes the user's instead of queueing a second).
+    pub fn ask_refresh(&mut self) -> Option<bool> {
+        if !self.signed_in || self.user_poll {
+            return None;
+        }
+        self.user_poll = true;
+        Some(!self.polling)
     }
 
     /// Takes a successful reading. Returns a notice on a confirmed grid change.
@@ -115,9 +173,14 @@ impl Monitor {
 
         let prev = self.grid;
         let next = rules::next_grid(prev, r.grid);
+        // A new outage, or the grid back: forget the history start (it belongs to "this outage").
         match next {
-            GridState::Off if prev != GridState::Off => self.off_since = Some(OffSince { at: r.time, exact: prev == GridState::On }),
-            GridState::On => self.off_since = None,
+            GridState::Off if prev != GridState::Off => {
+                let seen = prev == GridState::On && self.last.as_ref().is_some_and(|l| r.time.0 - l.time.0 <= SEEN_LIVE_MAX_GAP_S);
+                self.off_since = Some(OffSince { at: r.time, exact: seen });
+                self.since_start = None;
+            }
+            GridState::On => (self.off_since, self.since_start) = (None, None),
             _ => {}
         }
         self.grid = next;
@@ -142,6 +205,63 @@ impl Monitor {
         }
     }
 
+    /// Stores one day's grid history. `now` = station now, absolute minutes.
+    pub fn on_day(&mut self, day: i64, grid: GridDay, now: i64) {
+        if now >= (day + 1) * DAY + DAY_FINAL_AFTER_MIN {
+            self.history_final.insert(day);
+        }
+        self.history.insert(day, grid);
+    }
+
+    /// Past days still to fetch, newest first (yesterday feeds the Since line): missing ones, and
+    /// ones fetched before they had ended once they have. At most `DAYS_PER_POLL`.
+    pub fn days_to_fetch(&self, now: i64) -> Vec<i64> {
+        let today = now.div_euclid(DAY);
+        (today - PAST_DAYS..today)
+            .rev()
+            .filter(|d| !self.history_final.contains(d))
+            .filter(|d| !self.history.contains_key(d) || now >= (d + 1) * DAY + DAY_FINAL_AFTER_MIN)
+            .take(DAYS_PER_POLL)
+            .collect()
+    }
+
+    /// After a poll's history calls: drop old days, then read the current outage's start.
+    pub fn after_history(&mut self, now: i64) {
+        let oldest = now.div_euclid(DAY) - PAST_DAYS;
+        self.history.retain(|d, _| *d >= oldest);
+        self.history_final.retain(|d| *d >= oldest);
+        self.history_tried = true;
+        self.hist_start = outages::history_start(&self.history, now);
+        if let (GridState::Off, HistStart::Start(s)) = (self.grid, self.hist_start) {
+            self.since_start = Some(s);
+        }
+    }
+
+    /// Sign-out or another account: the history belongs to the old station.
+    pub fn forget_history(&mut self) {
+        self.history.clear();
+        self.history_final.clear();
+        (self.history_tried, self.hist_start, self.since_start) = (false, HistStart::Stale, None);
+    }
+
+    /// History is read only for stations with a battery (the off rule needs pBat).
+    pub fn has_history(&self) -> bool {
+        self.last.as_ref().is_some_and(|r| r.battery.is_some())
+    }
+
+    /// The 5 days before `today` all loaded with data: only then may a line say "(last 5 days)".
+    pub fn past_days_loaded(&self, today: i64) -> bool {
+        (today - PAST_DAYS..today).all(|d| self.history.get(&d).is_some_and(|g| g.newest.is_some()))
+    }
+
+    pub fn outages(&self, today: i64) -> Vec<Outage> {
+        outages::outages(&self.history, today)
+    }
+
+    pub fn has_today(&self, today: i64) -> bool {
+        self.history.get(&today).is_some_and(|g| g.newest.is_some())
+    }
+
     pub fn stale(&self, now: Instant) -> bool {
         rules::is_stale(self.seen_at.map(|t| now.duration_since(t)), self.failures)
     }
@@ -157,10 +277,12 @@ impl Monitor {
         if !self.signed_in {
             return None;
         }
-        let view = |status, now, gap, points, since| Some(ChartView { status, now, since, gap, points });
-        let Some(last) = &self.last else { return view("loading", 0, ChartSource::Plus.gap(), vec![], None) };
+        let Some(last) = &self.last else {
+            return Some(ChartView { status: "loading", now: 0, since: None, day: String::new(), gap: ChartSource::Plus.gap(), points: vec![] });
+        };
         last.battery.as_ref()?;
         let today = self.station_now(now)?;
+        let view = |status, now, gap, points, since| Some(ChartView { status, now, since, day: today.day_month(), gap, points });
         let now_min = today.minute_of_day();
         match self.plus.as_ref().filter(|p| p.day == today.day()) {
             Some(p) if p.points.is_empty() => view("empty", now_min, ChartSource::Plus.gap(), vec![], None),
@@ -174,8 +296,8 @@ impl Monitor {
                 if pts.is_empty() {
                     return view("failed", now_min, ChartSource::Own.gap(), pts, None);
                 }
-                // "Since 07:58" only when the app started today; otherwise the day from 00:00.
-                let since = self.first_reading.filter(|f| f.day() == today.day()).map(|f| f.hhmm());
+                // "Since 7:58 AM" only when the app started today; otherwise the day from 00:00.
+                let since = self.first_reading.filter(|f| f.day() == today.day()).map(|f| f.hhmm12());
                 view("fallback", now_min, ChartSource::Own.gap(), pts, since)
             }
         }
@@ -197,6 +319,10 @@ pub struct PollReport {
 pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monitor>) -> PollReport {
     let mut rep = PollReport::default();
     let mut src = src.lock().await;
+    let gen = mon.lock().unwrap().gen;
+    // The monitor, unless Sign Out (or another account) came while this poll ran: then the
+    // result belongs to the old session and is dropped.
+    let current = || Some(mon.lock().unwrap()).filter(|m| m.gen == gen);
     if !src.signed_in() {
         mon.lock().unwrap().signed_in = false;
         return rep;
@@ -205,11 +331,11 @@ pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monit
         Ok(r) => r,
         Err(e) => {
             rep.errors.push(e.to_string());
-            let mut m = mon.lock().unwrap();
+            let Some(mut m) = current() else { return rep };
             match e {
                 SemsError::WrongLogin(_) | SemsError::SignedOut => {
                     src.sign_out();
-                    m.signed_in = false;
+                    m.reset(false);
                 }
                 SemsError::Parse { reason, reply } => {
                     rep.bad_replies.push((reason, reply));
@@ -225,24 +351,58 @@ pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monit
     }
     let (has_battery, offset) = (r.battery.is_some(), r.utc_offset_h);
     let today = {
-        let mut m = mon.lock().unwrap();
+        let Some(mut m) = current() else { return rep };
         rep.notice = m.on_reading(r, Instant::now());
         m.station_now(Instant::now())
     };
     if let (true, Some(today)) = (has_battery, today) {
-        let c = match src.chart(today, offset).await {
-            Ok(c) => Some(c),
+        let now = today.0.div_euclid(60);
+        // Today: chart and history are one call, so no extra request.
+        let (chart, grid) = match src.day(today, offset).await {
+            Ok(d) => {
+                let chart = d.chart.map_err(|e| failed(&mut rep, "chart", e)).ok();
+                (chart, d.grid.map_err(|e| failed(&mut rep, &format!("history {}", today.date()), e)).ok())
+            }
             Err(e) => {
-                rep.errors.push(format!("chart: {e}"));
-                if let SemsError::Parse { reason, reply } = e {
-                    rep.bad_replies.push((format!("chart: {reason}"), reply));
-                }
-                None
+                failed(&mut rep, "chart", e);
+                (None, None)
             }
         };
-        mon.lock().unwrap().on_chart(c);
+        let todo = {
+            let Some(mut m) = current() else { return rep };
+            m.on_chart(chart);
+            if let Some(g) = grid {
+                m.on_day(today.day(), g, now);
+            }
+            m.days_to_fetch(now)
+        };
+        // Past days, newest first; the first error stops this poll's history (the next one retries).
+        for d in todo {
+            let date = LocalTs(d * 86_400);
+            match src.day(date, offset).await.and_then(|x| x.grid) {
+                Ok(g) => match current() {
+                    Some(mut m) => m.on_day(d, g, now),
+                    None => return rep,
+                },
+                Err(e) => {
+                    failed(&mut rep, &format!("history {}", date.date()), e);
+                    break;
+                }
+            }
+        }
+        if let Some(mut m) = current() {
+            m.after_history(now);
+        }
     }
     rep
+}
+
+/// Logs a failed SEMS+ read; an unreadable reply also goes to the redacted dump.
+fn failed(rep: &mut PollReport, what: &str, e: SemsError) {
+    rep.errors.push(format!("{what}: {e}"));
+    if let SemsError::Parse { reason, reply } = e {
+        rep.bad_replies.push((format!("{what}: {reason}"), reply));
+    }
 }
 
 /// Polls now, then every `POLL_EVERY`, and at once on each `refresh` message.
@@ -254,7 +414,14 @@ pub async fn run<S: Source>(
     mut on_report: impl FnMut(PollReport) + Send,
 ) {
     loop {
-        on_report(poll_once(&src, &mon).await);
+        mon.lock().unwrap().polling = true;
+        let rep = poll_once(&src, &mon).await;
+        // Before the report, whose redraw then shows the spin stopped.
+        {
+            let mut m = mon.lock().unwrap();
+            (m.polling, m.user_poll) = (false, false);
+        }
+        on_report(rep);
         tokio::select! {
             _ = tokio::time::sleep(rules::POLL_EVERY) => {}
             r = refresh.recv() => if r.is_none() { return },
@@ -349,7 +516,7 @@ mod tests {
         m.on_chart(None);
         m.on_reading(reading("10/18/2026 08:03:12", GridSignal::On, 89.0, 500.0), t0);
         let v = m.chart_view(t0).unwrap();
-        assert_eq!((v.status, v.gap, v.since.as_deref(), v.points.len()), ("fallback", 12, Some("07:58"), 2));
+        assert_eq!((v.status, v.gap, v.since.as_deref(), v.points.len()), ("fallback", 12, Some("7:58\u{a0}AM"), 2));
         // empty day from SEMS+
         m.on_chart(Some(ChartSeries { day, points: vec![] }));
         assert_eq!(m.chart_view(t0).unwrap().status, "empty");
@@ -387,8 +554,17 @@ mod tests {
     struct Fake {
         signed_in: bool,
         readings: VecDeque<Result<Reading, SemsError>>,
+        /// Today's call (the day of the last reading): chart from here, history from `history`.
         charts: VecDeque<Result<ChartSeries, SemsError>>,
+        history: std::collections::HashMap<i64, GridDay>,
+        /// Past days whose next call fails once.
+        fail_once: Vec<i64>,
+        today: Option<i64>,
         polls: Arc<Mutex<u32>>,
+        /// Every day asked for, in order.
+        days: Arc<Mutex<Vec<i64>>>,
+        /// When set, `reading()` waits for it: a poll held open mid-flight.
+        gate: Option<Arc<tokio::sync::Notify>>,
     }
 
     impl Source for Fake {
@@ -400,17 +576,105 @@ mod tests {
         }
         async fn reading(&mut self) -> Result<Reading, SemsError> {
             *self.polls.lock().unwrap() += 1;
-            self.readings.pop_front().unwrap_or(Err(SemsError::Network("empty".into())))
+            if let Some(g) = &self.gate {
+                g.notified().await;
+            }
+            let r = self.readings.pop_front().unwrap_or(Err(SemsError::Network("empty".into())));
+            if let Ok(r) = &r {
+                self.today = Some(r.time.day());
+            }
+            r
         }
-        async fn chart(&mut self, _: LocalTs, _: Option<f64>) -> Result<ChartSeries, SemsError> {
-            self.charts.pop_front().unwrap_or(Err(SemsError::Network("empty".into())))
+        async fn day(&mut self, date: LocalTs, _: Option<f64>) -> Result<Day, SemsError> {
+            let d = date.day();
+            self.days.lock().unwrap().push(d);
+            let grid = Ok(self.history.get(&d).cloned().unwrap_or(GridDay { off: vec![], newest: Some(1439) }));
+            if Some(d) == self.today {
+                let chart = self.charts.pop_front().unwrap_or(Err(SemsError::Network("empty".into())))?;
+                return Ok(Day { chart: Ok(chart), grid });
+            }
+            if let Some(i) = self.fail_once.iter().position(|x| *x == d) {
+                self.fail_once.remove(i);
+                return Err(SemsError::Network("timeout".into()));
+            }
+            Ok(Day { chart: Err(SemsError::Network("past day".into())), grid })
         }
     }
 
     fn fake(readings: Vec<Result<Reading, SemsError>>, charts: Vec<Result<ChartSeries, SemsError>>) -> (Arc<tokio::sync::Mutex<Fake>>, Arc<Mutex<u32>>) {
         let polls = Arc::new(Mutex::new(0));
-        let f = Fake { signed_in: true, readings: readings.into(), charts: charts.into(), polls: polls.clone() };
+        let f = Fake {
+            signed_in: true,
+            readings: readings.into(),
+            charts: charts.into(),
+            history: Default::default(),
+            fail_once: vec![],
+            today: None,
+            polls: polls.clone(),
+            days: Default::default(),
+            gate: None,
+        };
         (Arc::new(tokio::sync::Mutex::new(f)), polls)
+    }
+
+    fn day_of(s: &str) -> i64 {
+        LocalTs::parse(s).unwrap().day()
+    }
+
+    #[test]
+    fn past_days_fetched_once_after_they_end() {
+        let mut m = Monitor::new(true);
+        let t = LocalTs::parse("10/18/2026 00:05:00").unwrap().0 / 60;
+        let today = t.div_euclid(DAY);
+        // newest first, at most 3 per poll
+        assert_eq!(m.days_to_fetch(t), vec![today - 1, today - 2, today - 3]);
+        for d in (today - 5..today).rev() {
+            m.on_day(d, GridDay::default(), t);
+        }
+        // yesterday came before its end + 10 min: kept, refetched once from 00:10, then never
+        assert_eq!(m.days_to_fetch(t), Vec::<i64>::new());
+        assert_eq!(m.days_to_fetch(t + 5), vec![today - 1]);
+        m.on_day(today - 1, GridDay::default(), t + 5);
+        assert_eq!(m.days_to_fetch(t + 600), Vec::<i64>::new());
+        // the next day: today's entry (fetched as "today") becomes yesterday; day −5 moves on, old days go
+        m.on_day(today, GridDay::default(), t + 600);
+        let t2 = t + DAY;
+        m.after_history(t2);
+        assert!(!m.history.contains_key(&(today - 5)));
+        assert_eq!(m.days_to_fetch(t2), Vec::<i64>::new(), "today's partial entry waits for 00:10");
+        assert_eq!(m.days_to_fetch(t2 + 5), vec![today]);
+        // sign-out forgets everything
+        m.forget_history();
+        assert_eq!(m.days_to_fetch(t2 + 5).len(), 3);
+        assert!(!m.history_tried);
+    }
+
+    #[tokio::test]
+    async fn history_budget_and_retry() {
+        let r = |hhmm: &str| Ok(reading(&format!("10/18/2026 {hhmm}:00"), GridSignal::On, 90.0, 0.0));
+        let chart = || Ok(ChartSeries { day: day_of("10/18/2026 00:00:00"), points: vec![] });
+        let (src, _) = fake(vec![r("11:22"), r("11:24"), r("11:26"), r("11:28")], vec![chart(), chart(), chart(), chart()]);
+        let today = day_of("10/18/2026 00:00:00");
+        src.lock().await.fail_once = vec![today - 4];
+        let days = src.lock().await.days.clone();
+        let mon = Mutex::new(Monitor::new(true));
+        let take = || std::mem::take(&mut *days.lock().unwrap());
+        // cold start: today (same call as the chart) + 3 past days, newest first
+        assert!(poll_once(&src, &mon).await.errors.is_empty());
+        assert_eq!(take(), vec![today, today - 1, today - 2, today - 3]);
+        assert!(mon.lock().unwrap().history_tried);
+        assert!(!mon.lock().unwrap().past_days_loaded(today));
+        // day −4 fails: the poll stops there, no inner retry
+        let rep = poll_once(&src, &mon).await;
+        assert_eq!(rep.errors, vec!["history 2026-10-14: network: timeout".to_owned()]);
+        assert_eq!(take(), vec![today, today - 4]);
+        // the next poll retries it and goes on
+        poll_once(&src, &mon).await;
+        assert_eq!(take(), vec![today, today - 4, today - 5]);
+        assert!(mon.lock().unwrap().past_days_loaded(today));
+        // steady state: only today's call, as in T-001
+        poll_once(&src, &mon).await;
+        assert_eq!(take(), vec![today]);
     }
 
     #[tokio::test]
@@ -463,14 +727,80 @@ mod tests {
         at(1).await; // polls at start
         tokio::time::sleep(Duration::from_secs(60)).await;
         at(1).await;
-        tx.send(()).await.unwrap(); // Refresh now
+        // Refresh now (shell: ask_refresh, then send only when no poll runs)
+        assert_eq!(mon.lock().unwrap().ask_refresh(), Some(true));
+        assert_eq!(mon.lock().unwrap().ask_refresh(), None, "a second click while it runs does nothing");
+        tx.send(()).await.unwrap();
         tokio::time::sleep(Duration::from_millis(10)).await;
         at(2).await;
+        assert!(!mon.lock().unwrap().user_poll, "the spin stops after the poll, failed or not");
         tokio::time::sleep(rules::POLL_EVERY).await;
         at(3).await;
+        assert!(!mon.lock().unwrap().user_poll && !mon.lock().unwrap().polling, "timer polls never spin");
         assert!(mon.lock().unwrap().stale(Instant::now()), "3 failed polls = stale");
         drop(tx);
         tokio::time::sleep(rules::POLL_EVERY).await;
         task.await.unwrap();
+    }
+
+    #[test]
+    fn refresh_during_timer_poll_joins_it() {
+        let mut m = Monitor::new(true);
+        m.polling = true;
+        assert_eq!(m.ask_refresh(), Some(false), "a timer poll runs: it becomes the user's, no second poll");
+        assert!(m.user_poll);
+        assert_eq!(Monitor::new(false).ask_refresh(), None, "signed out: Refresh is disabled");
+    }
+
+    #[tokio::test]
+    async fn sign_out_clears_state() {
+        let r = Ok(reading("10/18/2026 11:22:00", GridSignal::Off, 80.0, 900.0));
+        let (src, _) = fake(vec![r], vec![Ok(ChartSeries { day: day_of("10/18/2026 00:00:00"), points: vec![(600, 90.0, 0.9)] })]);
+        let mon = Mutex::new(Monitor::new(true));
+        mon.lock().unwrap().account = Some("name@example.com".into());
+        poll_once(&src, &mon).await;
+        {
+            let m = mon.lock().unwrap();
+            assert!(m.last.is_some() && !m.history.is_empty() && m.off_since.is_some() && m.chart_view(Instant::now()).is_some());
+        }
+        // shell::sign_out after the Keychain delete: the client, then the monitor
+        src.lock().await.sign_out();
+        mon.lock().unwrap().reset(false);
+        let m = mon.lock().unwrap();
+        assert!(!m.signed_in && m.account.is_none() && m.last.is_none() && m.off_since.is_none() && m.since_start.is_none());
+        assert!(m.history.is_empty() && !m.history_tried && m.chart_view(Instant::now()).is_none());
+        let p = crate::view::panel(&m, Instant::now(), false);
+        assert!(!p.signed_in && p.account.is_none() && p.battery.is_none() && p.chart.is_none());
+    }
+
+    #[tokio::test]
+    async fn poll_after_sign_out_is_dropped() {
+        let r = Ok(reading("10/18/2026 11:22:00", GridSignal::Off, 80.0, 900.0));
+        let (src, _) = fake(vec![r], vec![]);
+        let gate = Arc::new(tokio::sync::Notify::new());
+        src.lock().await.gate = Some(gate.clone());
+        let mon = Arc::new(Mutex::new(Monitor::new(true)));
+        let poll = tokio::spawn({
+            let (src, mon) = (src.clone(), mon.clone());
+            async move { poll_once(&src, &mon).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(src.try_lock().is_err(), "the poll holds the client");
+        mon.lock().unwrap().reset(false); // Sign Out lands mid-poll
+        gate.notify_one();
+        poll.await.unwrap();
+        let m = mon.lock().unwrap();
+        assert!(!m.signed_in && m.last.is_none() && m.history.is_empty(), "its result must not sign the panel back in");
+    }
+
+    #[tokio::test]
+    async fn wrong_login_shows_sign_in() {
+        let (src, _) = fake(vec![Err(SemsError::WrongLogin("Email or password error".into()))], vec![]);
+        let mon = Mutex::new(Monitor::new(true));
+        mon.lock().unwrap().account = Some("name@example.com".into());
+        poll_once(&src, &mon).await;
+        let p = crate::view::panel(&mon.lock().unwrap(), Instant::now(), false);
+        // signedIn false → panel.js shows Sign In… (footer_signed_out), no account line
+        assert!(!p.signed_in && p.account.is_none());
     }
 }

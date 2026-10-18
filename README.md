@@ -6,14 +6,22 @@ A macOS menu bar app that shows your home battery level and whether the grid is 
 
 <img src="docs/screenshots/panel-dark.jpg" alt="Panel, dark" width="300"> <img src="docs/screenshots/panel-light.jpg" alt="Panel, light" width="300">
 
+- **Grid off since** comes from the inverter's minute history, so it is right after a restart too.
+- **Usually back around 12:05 PM (last 5 days)** while the grid is off, and **Next cut usually around 1:35 PM · back around 4:30 PM** while it is on. Both are estimates from the last 5 days, shown only when those days agree; never a promise.
+- **Chart:** point at it (or Tab, then ← →) to read the time, battery % and kW at that minute.
+- **Refresh:** the ↻ button at the top right, or ⌘R. The panel stays open while it refreshes.
+- **Sign Out** removes the saved login from your Keychain.
+
 ## Install
 
 1. Download `GoodWe Status.zip` from the Releases page, unzip it and move **GoodWe Status.app** to Applications.
 2. The app is not notarized, so the first time **right-click it, choose Open**, then **Open** again. (macOS 15+: try once, then **System Settings › Privacy & Security › Open Anyway**. Or: `xattr -dr com.apple.quarantine "/Applications/GoodWe Status.app"`.)
-3. Sign in with your SEMS Portal email and password. They are kept only in your Keychain. To change account, click the menu bar item, then **Sign In…**.
+3. Sign in with your SEMS Portal email and password. They are kept only in your Keychain. To change account, click the menu bar item, then **Sign Out**, then **Sign In…**.
 
 - **Keychain:** after each update macOS asks once to use the saved login. Click **Always Allow**.
 - **Focus can mute alerts:** to hear a power cut during Focus, add GoodWe Status under **System Settings › Focus › (your Focus) › Allowed Apps**.
+- **The history lines need a station without solar panels.** "Since", "Usually back around" and "Next cut" read outages from the minute history (grid at 0, battery carrying the house). With solar, self-consumption looks the same, so those lines would be wrong (the off-minute rule in `sems.rs` would also need the solar power at 0). The live grid state and alerts work with solar.
+- **Requests:** the history costs 5 extra requests when the app starts and one more each day; after that the same two requests per 2-minute poll as before (today's history comes with the chart).
 - **Start at login** is on after first sign-in. To turn it off: **System Settings › General › Login Items & Extensions**, switch off **GoodWe Status**.
 
 ## Build from source
@@ -62,8 +70,8 @@ ditto -c -k --keepParent "src-tauri/target/release/bundle/macos/GoodWe Status.ap
 ## When GoodWe changes their API
 
 1. When a reply can't be read, the menu bar item greys out and the reason plus the reply (personal fields removed) go to the log. Click the menu bar item, then **Open Log Folder**.
-2. Every URL, header, field path and the grid-off rule lives in `src-tauri/src/sems.rs`. Fix the mapping there.
-3. Save the new reply in `src-tauri/tests/fixtures/` with all personal data removed (email, tokens, station id, serial numbers, address), and add its expected reading to the tests in `sems.rs`.
+2. Every URL, header, field path and the grid-off minute rule lives in `src-tauri/src/sems.rs`; the outage, "since", "back around" and "next cut" rules live in `src-tauri/src/outages.rs`. Fix the mapping there.
+3. Save the new reply in `src-tauri/tests/fixtures/` with all personal data removed (email, tokens, station id, serial numbers, address), and add its expected result to the tests in `sems.rs` (`sems-plus-grid-history.json` is the history sample: its expected off minutes are there too).
 4. Run `cargo test --manifest-path src-tauri/Cargo.toml` until it passes, then open an issue or pull request with the redacted sample.
 
 ## License

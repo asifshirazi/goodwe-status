@@ -11,9 +11,10 @@ pub const POLL_EVERY: Duration = Duration::from_secs(120);
 pub const STALE_AFTER: Duration = Duration::from_secs(15 * 60);
 /// ...or after this many failed polls in a row.
 pub const STALE_FAILURES: u32 = 3;
-/// Below this the battery counts as idle. shortcut: a fixed 20 W dead band, tune it if real
-/// idle readings sit higher.
-pub const IDLE_WATTS: f64 = 20.0;
+/// Below this the battery counts as idle. shortcut: a fixed 50 W dead band (the real on-grid
+/// idle is about +30 W, T-002 research); tune it if other inverters idle higher. ui/panel.js
+/// `IDLE_KW` must stay equal to it.
+pub const IDLE_WATTS: f64 = 50.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -171,6 +172,18 @@ mod tests {
         assert_eq!(fmt_since_duration(38), "(38 min)");
         assert_eq!(fmt_since_duration(135), "(2h 15m)");
         assert_eq!(fmt_since_duration(60), "(1h 0m)");
+    }
+
+    #[test]
+    fn idle_watts_boundary() {
+        assert_eq!(fmt_power(49.0), "Battery idle");
+        assert_eq!(fmt_power(50.0), "Discharging 50 W");
+        assert_eq!(fmt_power(-49.9), "Battery idle");
+        assert_eq!(fmt_power(-50.0), "Charging 50 W");
+        assert_eq!(time_left_min(Some(5.1), 86.0, 49.0), None);
+        assert!(time_left_min(Some(5.1), 86.0, 50.0).is_some());
+        // readout_idle_matches_battery_row (Rust half): the real on-grid idle, +30 W
+        assert_eq!(fmt_power(30.0), "Battery idle");
     }
 
     #[test]

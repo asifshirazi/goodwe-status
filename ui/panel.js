@@ -1,20 +1,34 @@
-/* GoodWe Status panel renderer. No framework: GW.renderPanel(state) returns the panel's HTML.
+/* GoodWe Status panel renderer. No framework: GW.renderPanel(state) returns the panel's HTML,
+   GW.bindChart(rootEl) wires the chart's hover / keyboard read-out after each render (T-002).
    The Rust side sends `state` (already formatted strings, see the spec) on every poll and when the panel opens.
 
    state = {
-     status:   { kind: 'on'|'off'|'unknown'|'first'|'signedout', title, detail? },
+     status:   { kind: 'on'|'off'|'unknown'|'first'|'signedout', title, detail?, back?, next? },
+               // T-002 detail (grid off, from SEMS+ history): 'Since 9:07 AM (2h 15m)' · 'Since yesterday 11:33 PM (1h 7m)'
+               //   · 'Since 7:42 AM (38 min)' (history can't tell, but the app saw it go off)
+               //   · 'Since at least 11:58 AM' (history can't tell and the app didn't see it go off)
+               //   · 'Since at least 12:00 AM' · 'Since at least yesterday 12:00 AM' · absent while the first history call runs.
+               // T-002 back: 'Usually back around 12:05 PM (last 5 days)' only while off and the days agree; else absent.
+               // T-002 next (grid on): two lines, e.g. ['Next cut usually around 1:35 PM', 'back around 4:30 PM (last 5 days)']; else absent.
+     refreshing: bool,   // T-002: a poll the user started (click, ⌘R, sign-in) is running; the icon spins. Timer polls: false.
      battery:  null | { soc: '86%', power: 'Discharging 998 W', left?: { time: '~4h 20m', rest: 'left at 1.0 kW' } },
-     updated:  null | { stale: bool, text: 'Updated 08:20' | 'No new data since 08:20' },
+     updated:  null | { stale: bool, text: 'Updated 8:20 AM' | 'No new data since 8:20 AM' },  // T-002: Rust appends ' · refreshing…' while refreshing
      notificationsOff: bool,
-     chart:    null | { status: 'ok'|'loading'|'empty'|'failed'|'fallback', since?: '07:58' (fallback, only when the app started today),
+     chart:    null | { status: 'ok'|'loading'|'empty'|'failed'|'fallback', since?: '7:58 AM' (fallback, only when the app started today),
+                        day: '18 Oct' (T-002, station-local date for the hover read-out),
                         gap?: minutes (5 for SEMS+, 12 for own readings; default by status),
-                        now: minuteOfDay, points: [[minuteOfDay, soc, kW], ...] },   // kW > 0 = discharging; x runs 00:00 to now
-     signedIn: bool
+                        now: minuteOfDay, points: [[minuteOfDay, soc, kW], ...] },   // kW > 0 = discharging; x runs 12 AM to now
+     signedIn: bool,
+     account?: 'name@example.com'   // T-002 item 6: the signed-in SEMS account (Credentials.account); only while signedIn and known
    }
    Times are station-local minutes of today. Keep showing the last series while a refresh runs; 'loading' only before the first. */
 (function (root) {
   'use strict';
   let uid = 0;
+  const CHARTS = {}; // T-002: geometry + points of the live plot, keyed by its id, for bindChart; cleared on every render
+  const IDLE_KW = 0.05; // same as rules.rs IDLE_WATTS (50 W, director 2026-10-18)
+  const AX_CLEAR = 68; // T-003: widest end label '12:00 AM' 47.4 px + half of '12 AM' 16.3 + 4 gap (was 48 for 24 h)
+  const TIP_GAP = 8, TIP_PAD = 12; // card 8 pt from the line, may reach 12 pt (--gw-s3) into the section padding
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
   const PLUG = '<rect x="5.25" y="1" width="1.75" height="4.75" rx=".875"/><rect x="11" y="1" width="1.75" height="4.75" rx=".875"/>'
@@ -37,6 +51,7 @@
 
   // Chart: x 00:00 to now (chart.now, minute of day), left axis kW (symmetric, so 0 kW sits on the 50 % line), right axis SOC %.
   function chartSVG(chart) {
+    let plotId = '';
     const W = 304, Hh = 132, L = 26, R = 30, T = 16, B = 18, w = W - L - R, h = Hh - T - B;
     const now = chart.now != null ? chart.now : 0;
     // Fallback since launch only when the app started today (chart.since set); otherwise the day from 00:00.
@@ -49,7 +64,11 @@
     const end = Math.max(now, start + 2);
     const x = m => L + ((m - start) / (end - start)) * w, ys = s => T + (1 - s / 100) * h, yk = k => T + (1 - (k + maxKw) / (2 * maxKw)) * h;
     const fmt = k => (k < 0 ? '−' : '') + Math.abs(k);
-    const hm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(Math.round(m % 60)).padStart(2, '0');
+    // 12 h: '1:36 PM' (no leading zero; 0 → 12 AM; a no-break space keeps AM/PM with its time, as in Rust's hhmm12).
+    // Round first so 59.5 can't print ':60'. hr: whole-hour axis label, '6 AM'.
+    const ap = h => (h % 12 || 12) + '', ampm = h => (h % 24 < 12 ? '\u00a0AM' : '\u00a0PM');
+    const hm = m => { m = Math.round(m); const h = Math.floor(m / 60); return ap(h) + ':' + String(m % 60).padStart(2, '0') + ampm(h); };
+    const hr = m => ap(m / 60) + ampm(m / 60);
     let g = '';
     if (msg) {
       // No data to plot: a quiet frame and the message; no value or time axes (they would mean nothing).
@@ -61,10 +80,10 @@
       [[maxKw, 0], [0, .5], [-maxKw, 1]].forEach(([k, f]) => { g += `<text class="ax" x="${L - 4}" y="${T + f * h + 3.5}" text-anchor="end">${fmt(k)}</text>`; });
       [[100, 0], [50, .5], [0, 1]].forEach(([s, f]) => { g += `<text class="ax" x="${L + w + 4}" y="${T + f * h + 3.5}">${s}</text>`; });
       // Time labels: start, whole hours that fit, and now at the right end.
-      // An hour label needs 48 px from the end labels (half its width + a full label + a gap), or they touch.
+      // An hour label needs AX_CLEAR px from the end labels (half its width + a full label + a gap), or they touch.
       const step = (end - start) <= 240 ? 60 : (end - start) <= 720 ? 180 : 360;
       g += `<text class="ax" x="${x(start)}" y="${Hh - 4}">${hm(start)}</text>`;
-      for (let t = Math.ceil((start + 1) / step) * step; t < end; t += step) if (x(t) - x(start) >= 48 && x(end) - x(t) >= 48) g += `<text class="ax" x="${x(t)}" y="${Hh - 4}" text-anchor="middle">${hm(t)}</text>`;
+      for (let t = Math.ceil((start + 1) / step) * step; t < end; t += step) if (x(t) - x(start) >= AX_CLEAR && x(end) - x(t) >= AX_CLEAR) g += `<text class="ax" x="${x(t)}" y="${Hh - 4}" text-anchor="middle">${hr(t)}</text>`;
       g += `<text class="ax" x="${x(end)}" y="${Hh - 4}" text-anchor="end">${hm(end)}</text>`;
 
       // Break the lines where no reading came for more than GAP minutes: never draw values nobody measured.
@@ -80,19 +99,108 @@
         d += seg.length > 1 ? `<path class="soc" d="${path(seg, p => ys(p[1]))}"/>` : `<circle cx="${x(seg[0][0])}" cy="${ys(seg[0][1])}" r="1.5" fill="var(--gw-soc)"/>`;
       });
       const last = pts[pts.length - 1];
-      d += `<circle cx="${x(last[0])}" cy="${yk(last[2])}" r="2.5" fill="var(--gw-kw)"/><circle cx="${x(last[0])}" cy="${ys(last[1])}" r="3" fill="var(--gw-soc)"/></g>`;
+      d += `<g class="now"><circle cx="${x(last[0])}" cy="${yk(last[2])}" r="2.5" fill="var(--gw-kw)"/><circle cx="${x(last[0])}" cy="${ys(last[1])}" r="3" fill="var(--gw-soc)"/></g></g>`;
+      // T-002 read-out cursor: hidden until hover or keyboard focus; bindChart moves it.
+      d += `<g class="cur" visibility="hidden"><line class="cur-line" x1="0" x2="0" y1="${T}" y2="${T + h}"/>`
+        + `<circle class="cur-kw" r="3.5" cx="0" cy="0"/><circle class="cur-soc" r="4" cx="0" cy="0"/></g>`;
       g += d;
+      CHARTS[clip] = { L, w, T, h, start, end, GAP, pts, x, ys, yk, hm, day: chart.day || '' };
+      plotId = clip;
     }
     const label = chart.status === 'ok' || chart.status === 'fallback'
       ? `Battery today: ${pts.length ? pts[pts.length - 1][1] + '% now' : ''}` : (msg || '');
-    return `<svg viewBox="0 0 ${W} ${Hh}" role="img" aria-label="${esc(label)}">${g}</svg>`;
+    const svg = `<svg viewBox="0 0 ${W} ${Hh}" aria-hidden="true">${g}</svg>`;
+    // T-002: a plot with data is one focusable slider over time (HIG Charts: whole plot is the target; keyboard can move it).
+    if (!plotId) return `<div class="gw-plot" role="img" aria-label="${esc(label)}">${svg}</div>`;
+    return `<div class="gw-plot" data-plot="${plotId}" tabindex="0" role="slider" aria-label="${esc(label)}. Use left and right arrows to read the values at a time."`
+      + ` aria-valuemin="${start}" aria-valuemax="${end}" aria-valuenow="${pts[pts.length - 1][0]}">${svg}<div class="gw-tip" hidden></div></div>`;
+  }
+
+  // ---- T-002 chart read-out (hover + keyboard) ----
+  // Same wording and units as the Battery row (rules.rs fmt_power): whole watts below 1000 W, else kW with one decimal.
+  const kwRow = k => {
+    if (Math.abs(k) < IDLE_KW) return ['Idle', ''];
+    const w = Math.round(Math.abs(k) * 1000);
+    return [k > 0 ? 'Discharging' : 'Charging', w < 1000 ? w + ' W' : (Math.abs(k)).toFixed(1) + ' kW'];
+  };
+  function nearest(pts, m) { // pts are sorted by minute
+    let lo = 0, hi = pts.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (pts[mid][0] < m) lo = mid; else hi = mid; }
+    return Math.abs(pts[lo][0] - m) <= Math.abs(pts[hi][0] - m) ? pts[lo] : pts[hi];
+  }
+  // Show the cursor at minute m (snapped to the nearest reading). No reading within GAP → line + "No reading", no dots.
+  function showAt(el, m) {
+    const c = CHARTS[el.dataset.plot]; if (!c) return;
+    m = Math.max(c.start, Math.min(c.end, m));
+    const p = nearest(c.pts, m), hit = Math.abs(p[0] - m) <= c.GAP / 2 + 1;
+    const at = hit ? p[0] : Math.round(m), cx = c.x(at);
+    const cur = el.querySelector('.cur'), tip = el.querySelector('.gw-tip');
+    cur.setAttribute('visibility', 'visible');
+    cur.querySelector('.cur-line').setAttribute('x1', cx); cur.querySelector('.cur-line').setAttribute('x2', cx);
+    [['.cur-soc', hit && c.ys(p[1])], ['.cur-kw', hit && c.yk(p[2])]].forEach(([s, cy]) => {
+      const d = cur.querySelector(s); d.setAttribute('visibility', hit ? 'visible' : 'hidden'); if (hit) { d.setAttribute('cx', cx); d.setAttribute('cy', cy); }
+    });
+    el.querySelector('.now').setAttribute('visibility', 'hidden');
+    const when = (c.day ? c.day + ' ' : '') + c.hm(at), [kl, kv] = hit ? kwRow(p[2]) : [];
+    tip.innerHTML = `<p class="gw-tip-time">${esc(when)}</p>` + (hit
+      ? `<p class="gw-tip-row"><i class="soc"></i><span>Battery</span><b>${p[1]}%</b></p><p class="gw-tip-row"><i class="kw"></i><span>${kl}</span><b>${kv}</b></p>`
+      : `<p class="gw-tip-row gw-tip-none">No reading</p>`);
+    tip.hidden = false;
+    // Beside the line, right if it fits, else left; top-aligned with the plot. It may reach TIP_PAD into the section's
+    // padding on either side. The card is at most 156 pt wide (= (304 + 2·12 − 2·8) / 2), so one side always fits. The svg is drawn 1:1.
+    const k = el.clientWidth / 304, tw = tip.offsetWidth, px = cx * k;
+    tip.style.left = (px + TIP_GAP + tw <= el.clientWidth + TIP_PAD ? px + TIP_GAP : Math.max(-TIP_PAD, px - TIP_GAP - tw)) + 'px';
+    tip.style.top = (c.T * k) + 'px';
+    el.setAttribute('aria-valuenow', at);
+    el.setAttribute('aria-valuetext', hit ? `${when}, battery ${p[1]}%, ${kl.toLowerCase()}${kv ? ' ' + kv : ''}` : `${when}, no reading`);
+    el.dataset.at = at;
+  }
+  function hide(el) {
+    el.querySelector('.cur').setAttribute('visibility', 'hidden');
+    el.querySelector('.now').setAttribute('visibility', 'visible');
+    el.querySelector('.gw-tip').hidden = true;
+  }
+  function bindChart(rootEl) {
+    rootEl.querySelectorAll('.gw-plot[data-plot]').forEach(el => {
+      const c = CHARTS[el.dataset.plot], toMin = e => {
+        const r = el.getBoundingClientRect(), vx = (e.clientX - r.left) * 304 / r.width;
+        return c.start + (vx - c.L) / c.w * (c.end - c.start);
+      };
+      el.addEventListener('pointermove', e => showAt(el, toMin(e)));
+      el.addEventListener('pointerdown', e => e.preventDefault()); // a click never focuses the plot; only Tab does
+      el.addEventListener('pointerleave', () => el.matches(':focus-visible') ? showAt(el, +el.dataset.kb) : hide(el));
+      el.addEventListener('focus', () => { el.dataset.kb = c.pts[c.pts.length - 1][0]; showAt(el, +el.dataset.kb); });
+      el.addEventListener('blur', () => hide(el));
+      el.addEventListener('keydown', e => {
+        const step = { ArrowLeft: -5, ArrowRight: 5 }[e.key], m = +el.dataset.kb, P = c.pts;
+        let to = null;
+        if (step) {
+          // Snap to the reading nearest the step; if that is the reading we are on, take the next one that way,
+          // so each press moves at least one reading (own readings can be 10–12 min apart).
+          const dir = Math.sign(step), i = P.findIndex(p => p[0] === m);
+          let q = nearest(P, m + step * (e.shiftKey ? 12 : 1));
+          if (q[0] === m || Math.sign(q[0] - m) !== dir) q = P[Math.max(0, Math.min(P.length - 1, i + dir))];
+          to = q[0];
+        } else if (e.key === 'Home') to = P[0][0]; else if (e.key === 'End') to = P[P.length - 1][0];
+        if (to == null) return;
+        e.preventDefault(); e.stopPropagation();
+        showAt(el, to); el.dataset.kb = el.dataset.at;
+      });
+    });
   }
 
   function renderPanel(st) {
+    for (const id in CHARTS) delete CHARTS[id]; // one live panel: drop the previous render's plot data
     const s = st.status, out = [];
     // Stale never shows the live red alarm.
     const statusIcon = { on: ic('plug', 'is-strong'), off: ic('plugoff', st.updated && st.updated.stale ? 'is-strong' : 'is-red'), unknown: ic('plug'), first: ic('plug'), signedout: ic('plug') }[s.kind];
-    out.push(`<section class="gw-sec"><div class="gw-row">${statusIcon}<span class="gw-title">${esc(s.title)}</span></div>${s.detail ? `<p class="gw-sub">${esc(s.detail)}</p>` : ''}</section>`);
+    // T-002: Refresh is an icon button on the first row (top right), replacing the "Refresh Now" row.
+    const busy = !!st.refreshing, off = !st.signedIn;
+    const refresh = `<button class="gw-icon-btn${busy ? ' is-busy' : ''}" data-action="refresh" aria-label="${busy ? 'Refreshing' : 'Refresh'}" title="${busy ? 'Refreshing…' : 'Refresh (⌘R)'}"`
+      + `${off ? ' aria-disabled="true" tabindex="-1"' : busy ? ' aria-disabled="true" aria-busy="true"' : ''}>${ic('refresh')}</button>`;
+    out.push(`<section class="gw-sec"><div class="gw-row">${statusIcon}<span class="gw-title">${esc(s.title)}</span>${refresh}</div>`
+      + `${s.detail ? `<p class="gw-sub">${esc(s.detail)}</p>` : ''}${s.back ? `<p class="gw-sub">${esc(s.back)}</p>` : ''}`
+      + `${s.next ? s.next.map(l => `<p class="gw-sub">${esc(l)}</p>`).join('') : ''}</section>`);
 
     const b = st.battery;
     if (b) out.push(`<section class="gw-sec"><div class="gw-row">${ic('battery')}<span class="gw-title">Battery</span><span class="gw-val">${esc(b.soc)}</span></div>`
@@ -115,13 +223,18 @@
 
     const acts = [];
     if (st.notificationsOff) acts.push(['notif', 'bell', 'Turn On Notifications…', '']);
-    acts.push(['refresh', 'refresh', 'Refresh Now', '⌘R', !st.signedIn], ['signin', 'person', 'Sign In…', ''],
-      ['logs', 'folder', 'Open Log Folder', ''], ['quit', 'power', 'Quit', '⌘Q']);
-    out.push(`<nav class="gw-actions" aria-label="Actions">${acts.map(([id, icon, t, k, dis]) =>
-      `<button class="gw-act" data-action="${id}"${dis ? ' aria-disabled="true" tabindex="-1"' : ''}>${ic(icon)}<span>${t}</span>${k ? `<span class="k">${k}</span>` : ''}</button>`).join('')}</nav>`);
+    // T-002 item 6: the account sits where "Sign In…" was (first in the footer, away from Quit).
+    // Signed in → "Signed in as <email>" (text, not a row) + Sign Out. Signed out or login failed → Sign In….
+    // Signed in but the Keychain hasn't answered yet (no account) → neither.
+    if (!st.signedIn) acts.push(['signin', 'person', 'Sign In…', '']);
+    else if (st.account) acts.push(['acct'], ['signout', 'person', 'Sign Out', '']);
+    acts.push(['logs', 'folder', 'Open Log Folder', ''], ['quit', 'power', 'Quit', '⌘Q']);
+    out.push(`<nav class="gw-actions" aria-label="Actions">${acts.map(([id, icon, t, k, dis]) => id === 'acct'
+      ? `<p class="gw-acct" title="${esc(st.account)}">Signed in as <span>${esc(st.account)}</span></p>`
+      : `<button class="gw-act" data-action="${id}"${dis ? ' aria-disabled="true" tabindex="-1"' : ''}>${ic(icon)}<span>${t}</span>${k ? `<span class="k">${k}</span>` : ''}</button>`).join('')}</nav>`);
 
     return `<div class="gw-panel" role="dialog" aria-label="GoodWe Status">${out.join('')}</div>`;
   }
 
-  root.GW = { renderPanel, chartSVG };
+  root.GW = { renderPanel, chartSVG, bindChart, showAt, hide };
 })(typeof window !== 'undefined' ? window : globalThis);
