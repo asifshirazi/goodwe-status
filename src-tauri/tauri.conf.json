@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "GoodWe Status",
+  "version": "0.1.0",
+  "identifier": "dev.goodwestatus.menubar",
+  "build": { "frontendDist": "../ui" },
+  "app": {
+    "macOSPrivateApi": true,
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "panel", "title": "GoodWe Status", "url": "index.html", "width": 340, "height": 480, "visible": false,
+        "decorations": false, "transparent": true, "resizable": false, "alwaysOnTop": true,
+        "skipTaskbar": true, "focus": false, "shadow": true,
+        "windowEffects": { "effects": ["popover"], "state": "active", "radius": 12 }
+      },
+      {
+        "label": "signin", "title": "Sign in to SEMS Portal", "url": "signin.html", "width": 320, "height": 520,
+        "visible": false, "decorations": false, "transparent": true, "resizable": false, "center": true,
+        "skipTaskbar": true, "shadow": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:",
+      "dangerousDisableAssetCspModification": ["style-src"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "category": "Utility",
+    "icon": ["icons/app-icon-32.png", "icons/app-icon-128.png", "icons/icon.icns"],
+    "macOS": { "minimumSystemVersion": "12.0", "signingIdentity": "GoodWe Status Local Signing" }
+  }
+}

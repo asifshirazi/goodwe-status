@@ -1,0 +1,71 @@
+/* GoodWe Status panel: the Tauri web-view window under the tray icon.
+   Real app: the window is transparent with the macOS "popover"/"menu" window effect (vibrancy),
+   so set --gw-panel-bg to transparent there; the mock paints a translucent fill instead.
+   Tokens follow the system appearance. The window's own shadow and material frame the panel, so no CSS shadow here. */
+
+.gw-panel{
+  --gw-label:rgba(0,0,0,.85); --gw-label-2:rgba(0,0,0,.60); --gw-label-3:rgba(0,0,0,.30);
+  --gw-separator:rgba(0,0,0,.10); --gw-panel-bg:rgba(238,238,240,.86); --gw-panel-edge:rgba(0,0,0,.14);
+  --gw-highlight:#0063E1; --gw-on-highlight:#FFFFFF; --gw-red:#FF3B30;
+  --gw-soc:#0062CC; --gw-kw:#A84A00; --gw-kw-fill:rgba(168,74,0,.14); --gw-plot-text:rgba(0,0,0,.60);
+  --gw-s1:4px; --gw-s2:8px; --gw-s3:12px; --gw-radius:12px; --gw-row-radius:6px;
+}
+@media (prefers-color-scheme: dark){
+  .gw-panel{
+    --gw-label:rgba(255,255,255,.88); --gw-label-2:rgba(255,255,255,.60); --gw-label-3:rgba(255,255,255,.30);
+    --gw-separator:rgba(255,255,255,.12); --gw-panel-bg:rgba(44,44,46,.86); --gw-panel-edge:rgba(255,255,255,.16);
+    --gw-soc:#409CFF; --gw-kw:#FF9F0A; --gw-kw-fill:rgba(255,159,10,.16); --gw-plot-text:rgba(255,255,255,.60);
+  }
+}
+
+.gw-panel{
+  width:340px; box-sizing:border-box; padding:6px; border-radius:var(--gw-radius);
+  background:var(--gw-panel-bg); color:var(--gw-label);
+  font:13px/1.35 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased; font-variant-numeric:tabular-nums; cursor:default; user-select:none;
+}
+.gw-panel *{box-sizing:border-box}
+.gw-panel p{margin:0}
+
+/* Sections, hairline between them (inset like menu separators) */
+.gw-sec{padding:10px var(--gw-s3);position:relative}
+.gw-sec + .gw-sec::before, .gw-actions::before{content:"";position:absolute;top:0;left:var(--gw-s3);right:var(--gw-s3);height:1px;background:var(--gw-separator)}
+.gw-row{display:flex;align-items:center;gap:var(--gw-s2);min-height:20px}
+.gw-ic{width:16px;height:16px;flex:none;color:var(--gw-label-2);display:block}
+.gw-ic.is-red{color:var(--gw-red)}
+.gw-ic.is-strong{color:var(--gw-label)}
+.gw-title{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gw-val{font-weight:600}
+.gw-sub{font-size:12px;color:var(--gw-label-2);margin-top:2px !important;padding-left:24px}
+.gw-hero{margin-top:var(--gw-s2) !important;padding-left:24px;font-size:13px;color:var(--gw-label-2)}
+.gw-hero b{font-size:22px;line-height:26px;font-weight:600;color:var(--gw-label);letter-spacing:-.2px;margin-right:4px}
+.gw-note .gw-title{font-weight:400}
+.gw-note.is-stale .gw-title{font-weight:600}
+
+/* Chart */
+.gw-chart-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--gw-s2);margin-bottom:var(--gw-s1)}
+.gw-chart-head .gw-title{flex:none}
+.gw-legend{display:flex;gap:10px;font-size:11px;color:var(--gw-label-2)}
+.gw-legend span{display:inline-flex;align-items:center;gap:4px}
+.gw-legend i{display:inline-block;width:12px;height:2px;border-radius:1px}
+.gw-chart svg{display:block;width:100%;height:auto}
+.gw-chart .ax{font-size:10px;fill:var(--gw-plot-text)}
+.gw-chart .grid{stroke:var(--gw-separator);stroke-width:1}
+.gw-chart .zero{stroke:var(--gw-label-3);stroke-width:1}
+.gw-chart .soc{fill:none;stroke:var(--gw-soc);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.gw-chart .kw{fill:none;stroke:var(--gw-kw);stroke-width:1.5;stroke-linejoin:round}
+.gw-chart .kwfill{fill:var(--gw-kw-fill);stroke:none}
+.gw-chart .msg{font-size:12px;fill:var(--gw-label-2);text-anchor:middle}
+.gw-caption{font-size:11px;color:var(--gw-label-2);margin-top:var(--gw-s1) !important}
+
+/* Actions: menu-like rows */
+.gw-actions{padding:6px 0 0;margin-top:2px;position:relative;display:flex;flex-direction:column}
+.gw-act{all:unset;display:flex;align-items:center;gap:var(--gw-s2);height:24px;padding:0 var(--gw-s3) 0 10px;
+  border-radius:var(--gw-row-radius);color:var(--gw-label);font-size:13px}
+.gw-act .gw-ic{color:var(--gw-label-2)}
+.gw-act .k{margin-left:auto;color:var(--gw-label-2)}
+.gw-act:not([aria-disabled="true"]):hover,.gw-act:not([aria-disabled="true"]):focus-visible{background:var(--gw-highlight);color:var(--gw-on-highlight)}
+.gw-act:not([aria-disabled="true"]):hover .gw-ic,.gw-act:not([aria-disabled="true"]):hover .k,
+.gw-act:focus-visible .gw-ic,.gw-act:focus-visible .k{color:var(--gw-on-highlight)}
+.gw-act[aria-disabled="true"],.gw-act[aria-disabled="true"] .gw-ic,.gw-act[aria-disabled="true"] .k{color:var(--gw-label-3)}
+@media (forced-colors: active){ .gw-act:focus-visible{outline:2px solid Highlight} }

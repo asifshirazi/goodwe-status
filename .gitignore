@@ -1,0 +1,36 @@
+# Local tooling and crew files: kept on this Mac only (owner, 2026-10-18).
+# Only the app is committed: src-tauri/, ui/, docs/screenshots/, README.md, LICENSE, .gitignore.
+/graft/
+/project-management/
+/.claude/
+/.impeccable/
+/.superpowers/
+/docs/superpowers/
+/.armaze-stack
+/.ignore
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Rust (Cargo.lock stays committed: this is an app, not a library)
+/target/
+**/*.rs.bk
+*.pdb
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# This project's own Claude login
+/.claude-local/
