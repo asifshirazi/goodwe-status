@@ -193,7 +193,7 @@
     for (const id in CHARTS) delete CHARTS[id]; // one live panel: drop the previous render's plot data
     const s = st.status, out = [];
     // Stale never shows the live red alarm.
-    const statusIcon = { on: ic('plug', 'is-strong'), off: ic('plugoff', st.updated && st.updated.stale ? 'is-strong' : 'is-red'), unknown: ic('plug'), first: ic('plug'), signedout: ic('plug') }[s.kind];
+    const statusIcon = { on: ic('plug', st.updated && st.updated.stale ? 'is-strong' : 'is-green'), off: ic('plugoff', st.updated && st.updated.stale ? 'is-strong' : 'is-red'), unknown: ic('plug'), first: ic('plug'), signedout: ic('plug') }[s.kind];
     // T-002: Refresh is an icon button on the first row (top right), replacing the "Refresh Now" row.
     const busy = !!st.refreshing, off = !st.signedIn;
     const refresh = `<button class="gw-icon-btn${busy ? ' is-busy' : ''}" data-action="refresh" aria-label="${busy ? 'Refreshing' : 'Refresh'}" title="${busy ? 'Refreshing…' : 'Refresh (⌘R)'}"`
@@ -214,8 +214,7 @@
     const c = st.chart;
     if (c) {
       const cap = { fallback: 'SEMS+ history isn’t available, so this shows this app’s own readings.',
-        failed: 'The chart fills in from this app’s readings, every 2 minutes.',
-        ok: 'Above 0 kW the battery is discharging, below 0 it is charging.' }[c.status] || '';
+        failed: 'The chart fills in from this app’s readings, every 2 minutes.' }[c.status] || '';
       out.push(`<section class="gw-sec gw-chart"><div class="gw-chart-head"><span class="gw-title">${c.status === 'fallback' && c.since ? 'Since ' + esc(c.since) : 'Today'}</span>`
         + `<span class="gw-legend"><span><i style="background:var(--gw-soc)"></i>Battery %</span><span><i style="background:var(--gw-kw)"></i>Battery kW</span></span></div>`
         + chartSVG(c) + (cap ? `<p class="gw-caption">${cap}</p>` : '') + `</section>`);

@@ -6,7 +6,7 @@
 .gw-panel{
   --gw-label:rgba(0,0,0,.85); --gw-label-2:rgba(0,0,0,.60); --gw-label-3:rgba(0,0,0,.30);
   --gw-separator:rgba(0,0,0,.10); --gw-panel-bg:rgba(238,238,240,.86); --gw-panel-edge:rgba(0,0,0,.14);
-  --gw-highlight:#0063E1; --gw-on-highlight:#FFFFFF; --gw-red:#FF3B30;
+  --gw-highlight:#0063E1; --gw-on-highlight:#FFFFFF; --gw-red:#FF3B30; --gw-green:#248A3D; /* T-006: systemGreen, accessible (3.8:1 on the panel; #34C759 is 1.9:1) */
   --gw-soc:#0062CC; --gw-kw:#A84A00; --gw-kw-fill:rgba(168,74,0,.14); --gw-plot-text:rgba(0,0,0,.60);
   --gw-s1:4px; --gw-s2:8px; --gw-s3:12px; --gw-radius:12px; --gw-row-radius:6px;
   /* T-002 */
@@ -19,6 +19,7 @@
   .gw-panel{
     --gw-label:rgba(255,255,255,.88); --gw-label-2:rgba(255,255,255,.60); --gw-label-3:rgba(255,255,255,.30);
     --gw-separator:rgba(255,255,255,.12); --gw-panel-bg:rgba(44,44,46,.86); --gw-panel-edge:rgba(255,255,255,.16);
+    --gw-green:#30D158; /* T-006: systemGreen dark, 6.9:1 */
     --gw-soc:#409CFF; --gw-kw:#FF9F0A; --gw-kw-fill:rgba(255,159,10,.16); --gw-plot-text:rgba(255,255,255,.60);
     /* T-002 */
     --gw-fill-hover:rgba(255,255,255,.10); --gw-fill-press:rgba(255,255,255,.18);
@@ -42,6 +43,7 @@
 .gw-row{display:flex;align-items:center;gap:var(--gw-s2);min-height:20px}
 .gw-ic{width:16px;height:16px;flex:none;color:var(--gw-label-2);display:block}
 .gw-ic.is-red{color:var(--gw-red)}
+.gw-ic.is-green{color:var(--gw-green)}
 .gw-ic.is-strong{color:var(--gw-label)}
 .gw-title{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .gw-val{font-weight:600}
