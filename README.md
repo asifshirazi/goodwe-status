@@ -16,7 +16,7 @@ A macOS menu bar app that shows your home battery level and whether the grid is 
 
 ## Install
 
-1. Download `GoodWe Status.zip` from the Releases page, unzip it and move **GoodWe Status.app** to Applications.
+1. Download `GoodWe-Status-<version>-macos-arm64.zip` from the [latest release](https://github.com/asifshirazi/goodwe-status/releases/latest) (Apple silicon Macs), unzip it and move **GoodWe Status.app** to Applications. What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
 2. The app is not notarized, so the first time **right-click it, choose Open**, then **Open** again. (macOS 15+: try once, then **System Settings › Privacy & Security › Open Anyway**. Or: `xattr -dr com.apple.quarantine "/Applications/GoodWe Status.app"`.)
 3. Sign in with your SEMS Portal email and password. They are kept only in your Keychain. To change account: **Settings… › General › Sign Out**, then **Sign In…**.
 
