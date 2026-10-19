@@ -60,7 +60,7 @@ pub struct Status {
     pub title: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// Grid off: "Usually back around 12:05 PM (last 5 days)" when the past days agree.
+    /// Grid off: "Usually back around 12:05 PM (last 14 days)" when the past days agree.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub back: Option<String>,
     /// Grid on: the next usual cut, two lines.
@@ -141,7 +141,7 @@ fn off_lines(m: &Monitor, now: Instant) -> (Option<String>, Option<String>) {
     (Some(outages::since_text(s, now_min)), back)
 }
 
-/// Grid on: the next usual cut (spec › Next-cut rule), only with today and the 5 past days loaded.
+/// Grid on: the next usual cut (spec › Next-cut rule), only with today and the 14 past days loaded.
 fn next_lines(m: &Monitor, now: Instant) -> Option<[String; 2]> {
     let t = m.station_now(now)?;
     let today = t.0.div_euclid(60).div_euclid(DAY);
@@ -422,10 +422,10 @@ mod tests {
     fn since_from_history_today() {
         // table-driven series (not series-real): 10-18 09:07–12:03
         let (mut m, now) = live(&[("2026-10-18 11:22", OFF)]);
-        history(&mut m, days_from(&table(), day("2026-10-13 00:00"), at("2026-10-18 11:22")), at("2026-10-18 11:22"));
+        history(&mut m, days_from(&table(), day("2026-10-04 00:00"), at("2026-10-18 11:22")), at("2026-10-18 11:22"));
         let st = panel(&m, now, false).status;
         assert_eq!(st.detail.as_deref(), Some("Since 9:07\u{a0}AM (2h 15m)"));
-        assert_eq!(st.back, None, "A: the days disagree");
+        assert_eq!(st.back.as_deref(), Some("Usually back around 12:05\u{a0}PM (last 14 days)"), "A: 5 days disagree, 14 agree");
     }
 
     #[test]
@@ -538,7 +538,7 @@ mod tests {
     #[test]
     fn since_history_stale_keeps_start() {
         let (mut m, now) = live(&[("2026-10-18 11:22", OFF)]);
-        history(&mut m, days_from(&table(), day("2026-10-13 00:00"), at("2026-10-18 11:22")), at("2026-10-18 11:22"));
+        history(&mut m, days_from(&table(), day("2026-10-04 00:00"), at("2026-10-18 11:22")), at("2026-10-18 11:22"));
         // live goes on to 11:37, history's newest point stays 11:22 (15 min old)
         let now = now + Duration::from_secs(15 * 60);
         m.on_reading(reading(&ts("2026-10-18 11:37"), OFF, Some((70.0, 900.0))), now);
@@ -550,11 +550,11 @@ mod tests {
     #[test]
     fn since_history_stale_no_start() {
         let (mut m, now) = live(&[("2026-10-18 11:22", OFF)]);
-        history(&mut m, days_from(&table(), day("2026-10-13 00:00"), at("2026-10-18 11:00")), at("2026-10-18 11:22"));
+        history(&mut m, days_from(&table(), day("2026-10-04 00:00"), at("2026-10-18 11:00")), at("2026-10-18 11:22"));
         assert_eq!(detail(&m, now).as_deref(), Some("Since at least 11:22\u{a0}AM"));
         // seen live: S7a
         let (mut m, now) = live(&[("2026-10-18 11:17", ON), ("2026-10-18 11:22", OFF)]);
-        history(&mut m, days_from(&table(), day("2026-10-13 00:00"), at("2026-10-18 11:00")), at("2026-10-18 11:22"));
+        history(&mut m, days_from(&table(), day("2026-10-04 00:00"), at("2026-10-18 11:00")), at("2026-10-18 11:22"));
         assert_eq!(detail(&m, now).as_deref(), Some("Since 11:22\u{a0}AM (0 min)"));
     }
 
@@ -568,7 +568,7 @@ mod tests {
     #[test]
     fn since_live_on_wins() {
         let (mut m, now) = live(&[("2026-10-18 11:22", ON)]);
-        history(&mut m, days_from(&table(), day("2026-10-13 00:00"), at("2026-10-18 11:22")), at("2026-10-18 11:22"));
+        history(&mut m, days_from(&table(), day("2026-10-04 00:00"), at("2026-10-18 11:22")), at("2026-10-18 11:22"));
         let st = panel(&m, now, false).status;
         assert_eq!((st.kind, st.detail, st.back), ("on", None, None));
         assert_eq!(m.since_start, None);
@@ -579,14 +579,14 @@ mod tests {
         // table-driven 10-14: 09:08–12:03, then 13:35–16:31
         let tb = table();
         let (mut m, now) = live(&[("2026-10-14 11:22", OFF)]);
-        history(&mut m, days_from(&tb, day("2026-10-09 00:00"), at("2026-10-14 11:22")), at("2026-10-14 11:22"));
+        history(&mut m, days_from(&tb, day("2026-09-30 00:00"), at("2026-10-14 11:22")), at("2026-10-14 11:22"));
         assert_eq!(detail(&m, now).as_deref(), Some("Since 9:08\u{a0}AM (2h 14m)"));
         let now = now + Duration::from_secs(48 * 60);
         m.on_reading(reading(&ts("2026-10-14 12:10"), ON, Some((60.0, -3000.0))), now);
         assert_eq!(m.since_start, None);
         let now = now + Duration::from_secs(95 * 60);
         m.on_reading(reading(&ts("2026-10-14 13:45"), OFF, Some((90.0, 900.0))), now);
-        history(&mut m, days_from(&tb, day("2026-10-09 00:00"), at("2026-10-14 13:45")), at("2026-10-14 13:45"));
+        history(&mut m, days_from(&tb, day("2026-09-30 00:00"), at("2026-10-14 13:45")), at("2026-10-14 13:45"));
         assert_eq!(detail(&m, now).as_deref(), Some("Since 1:35\u{a0}PM (10 min)"));
     }
 
@@ -601,33 +601,33 @@ mod tests {
 
     #[test]
     fn back_kept_while_stale() {
-        // R1, real (table-driven series): 10-14 11:22 → 12:00; at 11:40 with no data since 11:22 → kept
+        // R1, real (table-driven series): 10-14 11:22 → 12:05; at 11:40 with no data since 11:22 → kept
         let (mut m, now) = live(&[("2026-10-14 11:22", OFF)]);
-        history(&mut m, days_from(&table(), day("2026-10-09 00:00"), at("2026-10-14 11:22")), at("2026-10-14 11:22"));
+        history(&mut m, days_from(&table(), day("2026-09-30 00:00"), at("2026-10-14 11:22")), at("2026-10-14 11:22"));
         let st = panel(&m, now, false).status;
-        assert_eq!(st.back.as_deref(), Some("Usually back around 12:00\u{a0}PM (last 5 days)"));
+        assert_eq!(st.back.as_deref(), Some("Usually back around 12:05\u{a0}PM (last 14 days)"));
         let later = now + Duration::from_secs(18 * 60);
         let p = panel(&m, later, false);
         assert!(p.updated.unwrap().stale);
         assert_eq!(p.status.detail.as_deref(), Some("Since 9:08\u{a0}AM (2h 32m)"));
-        assert_eq!(p.status.back.as_deref(), Some("Usually back around 12:00\u{a0}PM (last 5 days)"));
+        assert_eq!(p.status.back.as_deref(), Some("Usually back around 12:05\u{a0}PM (last 14 days)"));
     }
 
     #[test]
     fn back_absent_without_history_start() {
         let tb = table();
-        let r1 = || days_from(&tb, day("2026-10-09 00:00"), at("2026-10-14 11:22"));
+        let r1 = || days_from(&tb, day("2026-09-30 00:00"), at("2026-10-14 11:22"));
         // S1: the first history call is still out
         let (m, now) = live(&[("2026-10-14 11:22", OFF)]);
         assert_eq!(panel(&m, now, false).status.back, None);
-        // S7: today's call failed, the 5 past days are there
+        // S7: today's call failed, the 14 past days are there
         let (mut m, now) = live(&[("2026-10-14 11:22", OFF)]);
         let mut d = r1();
         d.remove(&day("2026-10-14 00:00"));
         history(&mut m, d, at("2026-10-14 11:22"));
         let st = panel(&m, now, false).status;
         assert_eq!((st.detail.as_deref(), st.back), (Some("Since at least 11:22\u{a0}AM"), None));
-        // a past day missing: no "(last 5 days)" line
+        // a past day missing: no "(last 14 days)" line
         let (mut m, now) = live(&[("2026-10-14 11:22", OFF)]);
         let mut d = r1();
         d.remove(&day("2026-10-11 00:00"));
@@ -640,17 +640,17 @@ mod tests {
     #[test]
     fn back_absent_when_grid_on() {
         let (mut m, now) = live(&[("2026-10-14 11:22", ON)]);
-        history(&mut m, days_from(&table(), day("2026-10-09 00:00"), at("2026-10-14 11:22")), at("2026-10-14 11:22"));
+        history(&mut m, days_from(&table(), day("2026-09-30 00:00"), at("2026-10-14 11:22")), at("2026-10-14 11:22"));
         assert_eq!(panel(&m, now, false).status.back, None);
     }
 
     #[test]
     fn next_cut_absent_when_grid_off_or_unknown() {
-        let d = || days_from(&table(), day("2026-10-13 00:00"), at("2026-10-18 12:10"));
+        let d = || days_from(&table(), day("2026-10-04 00:00"), at("2026-10-18 12:10"));
         let (mut m, now) = live(&[("2026-10-18 12:10", ON)]);
         history(&mut m, d(), at("2026-10-18 12:10"));
         let st = panel(&m, now, false).status;
-        assert_eq!(st.next, Some(["Next cut usually around 1:35\u{a0}PM".to_owned(), "back around 4:30\u{a0}PM (last 5 days)".to_owned()]));
+        assert_eq!(st.next, Some(["Next cut usually around 1:35\u{a0}PM".to_owned(), "back around 4:30\u{a0}PM (last 14 days)".to_owned()]));
         for g in [OFF, GridSignal::Disagree] {
             let (mut m, now) = live(&[("2026-10-18 12:10", g)]);
             history(&mut m, d(), at("2026-10-18 12:10"));
@@ -663,7 +663,7 @@ mod tests {
 
     #[test]
     fn next_cut_absent_without_history() {
-        let d = || days_from(&table(), day("2026-10-13 00:00"), at("2026-10-18 12:10"));
+        let d = || days_from(&table(), day("2026-10-04 00:00"), at("2026-10-18 12:10"));
         // not loaded yet
         let (m, now) = live(&[("2026-10-18 12:10", ON)]);
         assert_eq!(panel(&m, now, false).status.next, None);
@@ -858,7 +858,7 @@ mod tests {
             m.account = Some("name@example.com".into());
             m.on_reading(reading(&ts(&format!("{date} {}", last.unwrap_or(time))), sig, Some((p.1, p.2 * 1000.0))), t0);
             if let Some(h) = hist {
-                history(&mut m, days_from(h, now_abs.div_euclid(DAY) - 5, now_abs), now_abs);
+                history(&mut m, days_from(h, now_abs.div_euclid(DAY) - outages::PAST_DAYS, now_abs), now_abs);
                 m.on_chart(Some(ChartSeries { day: now_abs.div_euclid(DAY), points: pts }));
             }
             (m, t0 + Duration::from_secs(((at(&format!("{date} {time}")) - now_abs) * 60) as u64))

@@ -4,6 +4,9 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ## [Unreleased]
 
+### Changed
+- "Usually back around" and "Next cut" now look at the last 14 days instead of 5, so they show up more often, also after a few unusual days.
+
 ## [0.1.1] - 2026-10-19
 
 ### Added

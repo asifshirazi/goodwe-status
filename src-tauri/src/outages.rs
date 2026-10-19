@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 pub const DAY: i64 = 1440;
 /// The predictions look at this many days before today.
-pub const PAST_DAYS: i64 = 5;
+pub const PAST_DAYS: i64 = 14;
 /// Off minutes merge when the next one comes at most this many minutes after the last (flicker,
 /// gaps in the series). The research table keeps 13:11 and 13:17 apart: 6 is not merged.
 const MERGE_GAP: i64 = 5;
@@ -198,15 +198,15 @@ fn agreed(sorted: &[i64]) -> &[i64] {
     best
 }
 
-/// Back-on step 1: the 5 past days' finished outages, owned by their start day; the run already
-/// open at day −5 00:00 is dropped (it began on a day that isn't fetched).
+/// Back-on step 1: the 14 past days' finished outages, owned by their start day; the run already
+/// open at day −14 00:00 is dropped (it began on a day that isn't fetched).
 fn candidates(outs: &[Outage], today: i64) -> impl Iterator<Item = &Outage> {
     let oldest = (today - PAST_DAYS) * DAY;
     outs.iter().filter(move |o| !o.running && (oldest..today * DAY).contains(&o.start) && o.start != oldest)
 }
 
 /// Back-on rule, steps 2–8: `s` = the current outage's start, `now` = station now in minutes.
-/// "Usually back around 12:05 PM (last 5 days)" or nothing.
+/// "Usually back around 12:05 PM (last 14 days)" or nothing.
 pub fn back_on(outs: &[Outage], s: i64, now: f64) -> Option<String> {
     let today = (now.floor() as i64).div_euclid(DAY);
     let elapsed = now - s as f64;
@@ -226,7 +226,7 @@ pub fn back_on(outs: &[Outage], s: i64, now: f64) -> Option<String> {
         return None;
     }
     let raw = median(set);
-    (now < raw).then(|| format!("Usually back around {} (last 5 days)", hm(round5(raw))))
+    (now < raw).then(|| format!("Usually back around {} (last 14 days)", hm(round5(raw))))
 }
 
 /// A cut placed on yesterday, today or tomorrow: (start, end, the day it really happened).
@@ -281,7 +281,7 @@ pub fn next_cut(outs: &[Outage], now: f64, stale: bool) -> Option<[String; 2]> {
         if st > now + DAY as f64 {
             continue;
         }
-        let back = |e: f64| format!("back around {} (last 5 days)", hm(round5(e)));
+        let back = |e: f64| format!("back around {} (last 14 days)", hm(round5(e)));
         if st <= now {
             // 6. done when a real cut (≥ 45 min or still running) started within 90 min
             let done = outs
@@ -297,7 +297,7 @@ pub fn next_cut(outs: &[Outage], now: f64, stale: bool) -> Option<[String; 2]> {
             return Some([format!("Cut usually around {}, {when}", hm(round5(st))), back(e)]);
         }
         let tomorrow = if round5(st).div_euclid(DAY) > today { " tomorrow" } else { "" };
-        let l2 = end.map_or_else(|| "end time varies (last 5 days)".to_owned(), back);
+        let l2 = end.map_or_else(|| "end time varies (last 14 days)".to_owned(), back);
         return Some([format!("Next cut usually around {}{tomorrow}", hm(round5(st))), l2]);
     }
     None
@@ -375,7 +375,7 @@ mod tests {
         Some([a.to_owned(), b.to_owned()])
     }
     fn usual(hhmm: &str) -> Option<String> {
-        Some(format!("Usually back around {hhmm} (last 5 days)"))
+        Some(format!("Usually back around {hhmm} (last 14 days)"))
     }
     /// Made-up outages from (start, end) strings; none running.
     fn made(v: &[(&str, &str)]) -> Vec<Outage> {
@@ -453,21 +453,61 @@ mod tests {
 
     #[test]
     fn back_absent_when_days_disagree() {
-        // A, real: ends 12:03, 12:03, 13:11, 16:32 → only 2 agree
-        assert_eq!(back("2026-10-18 09:27"), None);
-        assert_eq!(back("2026-10-18 11:22"), None);
+        // A, made-up: ends 12:03, 12:03, 13:11, 16:32 → only 2 agree
+        let o = made(&[
+            ("2026-10-17 09:25", "2026-10-17 16:32"),
+            ("2026-10-15 10:06", "2026-10-15 13:11"),
+            ("2026-10-14 09:08", "2026-10-14 12:03"),
+            ("2026-10-13 09:07", "2026-10-13 12:03"),
+        ]);
+        assert_eq!(back_on(&o, at("2026-10-18 09:07"), at("2026-10-18 09:27") as f64), None);
+    }
+
+    #[test]
+    fn back_real_ten_eighteen_morning() {
+        // A, real: the last 5 days alone disagree (12:03, 12:03, 13:11, 16:32); with 10-07..10-12 too they agree
+        assert_eq!(back("2026-10-18 09:27"), usual("12:05\u{a0}PM"));
+        assert_eq!(back("2026-10-18 11:22"), usual("12:05\u{a0}PM"));
+    }
+
+    #[test]
+    fn back_today_case_fourteen_days() {
+        // T-019, the owner's 2026-10-19 cut from 9:07 AM, asked at 10:26 AM. The stored 14 days'
+        // cuts near 9 AM (10-16 has none within 90 min): only 2 of the last 5 days agree, 10 of 14 do.
+        let o = made(&[
+            ("2026-10-05 09:08", "2026-10-05 12:03"),
+            ("2026-10-06 09:07", "2026-10-06 12:02"),
+            ("2026-10-07 09:06", "2026-10-07 12:03"),
+            ("2026-10-08 09:06", "2026-10-08 12:03"),
+            ("2026-10-09 09:05", "2026-10-09 12:02"),
+            ("2026-10-10 10:32", "2026-10-10 12:06"),
+            ("2026-10-11 09:08", "2026-10-11 12:02"),
+            ("2026-10-12 09:05", "2026-10-12 12:02"),
+            ("2026-10-13 09:07", "2026-10-13 12:03"),
+            ("2026-10-14 09:08", "2026-10-14 12:03"),
+            ("2026-10-15 10:06", "2026-10-15 13:11"),
+            ("2026-10-16 06:03", "2026-10-16 08:28"),
+            ("2026-10-16 11:28", "2026-10-16 13:31"),
+            ("2026-10-17 09:25", "2026-10-17 16:32"),
+            ("2026-10-18 09:07", "2026-10-18 12:03"),
+        ]);
+        let s = at("2026-10-19 09:07");
+        assert_eq!(back_on(&o, s, at("2026-10-19 10:26") as f64), Some("Usually back around 12:05\u{a0}PM (last 14 days)".to_owned()));
+        // the same cuts seen 5 days back only: no line (the bug the owner saw)
+        let last5: Vec<Outage> = o.iter().filter(|x| x.start >= at("2026-10-14 00:01")).copied().collect();
+        assert_eq!(back_on(&last5, s, at("2026-10-19 10:26") as f64), None);
     }
 
     #[test]
     fn back_four_agree() {
-        // R1, real
-        assert_eq!(back("2026-10-14 11:22"), usual("12:00\u{a0}PM"));
+        // R1, real (10-07..10-13 all agree around 12:03)
+        assert_eq!(back("2026-10-14 11:22"), usual("12:05\u{a0}PM"));
     }
 
     #[test]
     fn back_hidden_once_raw_median_passed() {
-        assert_eq!(back("2026-10-14 12:01"), usual("12:00\u{a0}PM")); // R1, raw median 12:02
-        assert_eq!(back("2026-10-14 12:02"), None);
+        assert_eq!(back("2026-10-14 12:02"), usual("12:05\u{a0}PM")); // R1, raw median 12:03
+        assert_eq!(back("2026-10-14 12:03"), None);
         assert_eq!(back("2026-10-15 12:02"), usual("12:05\u{a0}PM")); // R2, raw median 12:03
         assert_eq!(back("2026-10-15 12:03"), None);
         assert_eq!(back("2026-10-15 12:20"), None); // still off, no later set agrees
@@ -475,20 +515,32 @@ mod tests {
 
     #[test]
     fn back_reruns_as_elapsed_grows() {
-        // R3, real
-        assert_eq!(back("2026-10-14 15:00"), usual("4:35\u{a0}PM"));
-        assert_eq!(back("2026-10-14 16:05"), usual("4:30\u{a0}PM"));
+        // R3, made-up: 3 short cuts (75-79 min) and 3 long ones from 13:30; once 80 min have passed
+        // only the long ones are longer than the current cut
+        let o = made(&[
+            ("2026-10-17 13:30", "2026-10-17 14:45"),
+            ("2026-10-16 13:30", "2026-10-16 14:47"),
+            ("2026-10-15 13:30", "2026-10-15 14:49"),
+            ("2026-10-14 13:30", "2026-10-14 16:30"),
+            ("2026-10-13 13:30", "2026-10-13 16:32"),
+            ("2026-10-12 13:30", "2026-10-12 16:34"),
+        ]);
+        let s = at("2026-10-18 13:30");
+        assert_eq!(back_on(&o, s, at("2026-10-18 14:00") as f64), usual("2:45\u{a0}PM"));
+        assert_eq!(back_on(&o, s, at("2026-10-18 14:50") as f64), usual("4:30\u{a0}PM"));
+        // real
+        assert_eq!(back("2026-10-14 15:00"), usual("4:30\u{a0}PM"));
     }
 
     #[test]
     fn back_since_yesterday_two_days() {
-        // R4, real: picks only on 10-14 and 10-13
-        assert_eq!(back("2026-10-18 00:40"), None);
+        // R4, real: in the last 5 days picks only on 10-14 and 10-13; 10-07..10-12 add enough
+        assert_eq!(back("2026-10-18 00:40"), usual("2:05\u{a0}AM"));
     }
 
     #[test]
     fn back_excludes_current_cut() {
-        // R4, real: the running 10-17 23:33 cut is no candidate, though yesterday is one of the 5 days
+        // R4, real: the running 10-17 23:33 cut is no candidate, though yesterday is one of the 14 days
         let (tb, t) = (table(), at("2026-10-18 00:40"));
         let k = known(&tb, t);
         assert!(k.iter().any(|o| o.start == at("2026-10-17 23:33") && o.running));
@@ -498,7 +550,7 @@ mod tests {
     #[test]
     fn back_kept_while_stale_on_the_rule() {
         // R1 at 11:40 (the rule has no stale input: history-based, it stays)
-        assert_eq!(back("2026-10-14 11:40"), usual("12:00\u{a0}PM"));
+        assert_eq!(back("2026-10-14 11:40"), usual("12:05\u{a0}PM"));
     }
 
     #[test]
@@ -604,13 +656,13 @@ mod tests {
 
     #[test]
     fn back_drops_run_open_at_oldest_day() {
-        // made-up: today 10-18, day −5 = 10-13 opens off at 00:00 → not a candidate; its later cut is
+        // made-up: today 10-27, day −14 = 10-13 opens off at 00:00 → not a candidate; its later cut is
         let o = made(&[
             ("2026-10-13 00:00", "2026-10-13 02:03"),
             ("2026-10-13 09:05", "2026-10-13 12:02"),
             ("2026-10-14 09:05", "2026-10-14 12:02"),
         ]);
-        let c: Vec<_> = candidates(&o, at("2026-10-18 00:00").div_euclid(DAY)).map(|x| x.start).collect();
+        let c: Vec<_> = candidates(&o, at("2026-10-27 00:00").div_euclid(DAY)).map(|x| x.start).collect();
         assert_eq!(c, vec![at("2026-10-13 09:05"), at("2026-10-14 09:05")]);
     }
 
@@ -638,47 +690,48 @@ mod tests {
     #[test]
     fn next_cut_upcoming_with_end() {
         // N-A, real
-        assert_eq!(next("2026-10-18 12:10", false), lines("Next cut usually around 1:35\u{a0}PM", "back around 4:30\u{a0}PM (last 5 days)"));
+        assert_eq!(next("2026-10-18 12:10", false), lines("Next cut usually around 1:35\u{a0}PM", "back around 4:30\u{a0}PM (last 14 days)"));
+        // real: the last 5 days' 9 AM ends disagree, the 14 days' agree
+        assert_eq!(next("2026-10-18 08:55", false), lines("Next cut usually around 9:05\u{a0}AM", "back around 12:05\u{a0}PM (last 14 days)"));
     }
 
     #[test]
     fn next_cut_due_not_yet_today() {
         // N-B, real
-        assert_eq!(next("2026-10-16 10:28", false), lines("Cut usually around 9:10\u{a0}AM, not yet today", "back around 12:05\u{a0}PM (last 5 days)"));
+        assert_eq!(next("2026-10-16 10:28", false), lines("Cut usually around 9:05\u{a0}AM, not yet today", "back around 12:05\u{a0}PM (last 14 days)"));
     }
 
     #[test]
     fn next_cut_due_after_midnight() {
         // N-B2, real
-        assert_eq!(next("2026-10-15 23:50", false), lines("Cut usually around 11:35\u{a0}PM, not yet today", "back around 2:05\u{a0}AM (last 5 days)"));
-        assert_eq!(next("2026-10-16 00:05", false), lines("Cut usually around 11:35\u{a0}PM, not yet", "back around 2:05\u{a0}AM (last 5 days)"));
-        assert_eq!(next("2026-10-16 02:02", false), lines("Cut usually around 11:35\u{a0}PM, not yet", "back around 2:05\u{a0}AM (last 5 days)"));
-        assert_eq!(next("2026-10-16 02:05", false), lines("Next cut usually around 9:10\u{a0}AM", "back around 12:05\u{a0}PM (last 5 days)"));
+        assert_eq!(next("2026-10-15 23:50", false), lines("Cut usually around 11:35\u{a0}PM, not yet today", "back around 2:05\u{a0}AM (last 14 days)"));
+        assert_eq!(next("2026-10-16 00:05", false), lines("Cut usually around 11:35\u{a0}PM, not yet", "back around 2:05\u{a0}AM (last 14 days)"));
+        assert_eq!(next("2026-10-16 02:02", false), lines("Cut usually around 11:35\u{a0}PM, not yet", "back around 2:05\u{a0}AM (last 14 days)"));
+        assert_eq!(next("2026-10-16 02:05", false), lines("Next cut usually around 9:05\u{a0}AM", "back around 12:05\u{a0}PM (last 14 days)"));
     }
 
     #[test]
     fn next_cut_moves_on_after_end_passed() {
         // N-C, real
-        assert_eq!(next("2026-10-16 02:30", false), lines("Next cut usually around 9:10\u{a0}AM", "back around 12:05\u{a0}PM (last 5 days)"));
+        assert_eq!(next("2026-10-16 02:30", false), lines("Next cut usually around 9:05\u{a0}AM", "back around 12:05\u{a0}PM (last 14 days)"));
     }
 
     #[test]
     fn next_cut_skips_cut_done() {
         // N-C2, real: today's 18:09 cut ended early (21:07)
-        assert_eq!(next("2026-10-16 21:10", false), lines("Next cut usually around 11:35\u{a0}PM", "back around 2:05\u{a0}AM (last 5 days)"));
+        assert_eq!(next("2026-10-16 21:10", false), lines("Next cut usually around 11:35\u{a0}PM", "back around 2:05\u{a0}AM (last 14 days)"));
     }
 
     #[test]
     fn next_cut_flicker_is_not_done() {
         // real: the 12:59–13:24 flicker doesn't mark the 13:35 cut done
-        assert_eq!(next("2026-10-13 13:35", false), lines("Cut usually around 1:35\u{a0}PM, not yet today", "back around 4:30\u{a0}PM (last 5 days)"));
+        assert_eq!(next("2026-10-13 13:35", false), lines("Cut usually around 1:35\u{a0}PM, not yet today", "back around 4:30\u{a0}PM (last 14 days)"));
     }
 
     #[test]
     fn next_cut_start_only_when_ends_disagree() {
         // N-D, real
-        assert_eq!(next("2026-10-18 08:55", false), lines("Next cut usually around 9:10\u{a0}AM", "end time varies (last 5 days)"));
-        assert_eq!(next("2026-10-12 22:33", false), lines("Next cut usually around 11:35\u{a0}PM", "end time varies (last 5 days)"));
+        assert_eq!(next("2026-10-12 22:33", false), lines("Next cut usually around 11:35\u{a0}PM", "end time varies (last 14 days)"));
     }
 
     #[test]
@@ -689,7 +742,7 @@ mod tests {
 
     #[test]
     fn next_cut_upcoming_shown_while_stale() {
-        assert_eq!(next("2026-10-18 12:10", true), lines("Next cut usually around 1:35\u{a0}PM", "back around 4:30\u{a0}PM (last 5 days)"));
+        assert_eq!(next("2026-10-18 12:10", true), lines("Next cut usually around 1:35\u{a0}PM", "back around 4:30\u{a0}PM (last 14 days)"));
     }
 
     /// Made-up days 10-13..10-17 with one cut each at the given start, ending 3 h later.
@@ -709,7 +762,6 @@ mod tests {
     fn next_cut_rounds_half_up() {
         let o = daily(&[("17", "17:41"), ("13", "18:03"), ("14", "18:06"), ("15", "18:09"), ("16", "18:31")]);
         assert_eq!(next_cut(&o, at("2026-10-18 12:00") as f64, false).unwrap()[0], "Next cut usually around 6:05\u{a0}PM"); // made-up 18:04.5
-        assert_eq!(next("2026-10-16 10:28", false).unwrap()[0], "Cut usually around 9:10\u{a0}AM, not yet today"); // real N-B 09:07.5
     }
 
     #[test]
@@ -731,7 +783,7 @@ mod tests {
         o.extend(made(&[("2026-10-16 21:00", "2026-10-16 22:00"), ("2026-10-17 21:00", "2026-10-17 23:30")]));
         assert_eq!(
             next_cut(&o, at("2026-10-18 23:50") as f64, false),
-            lines("Next cut usually around 9:10\u{a0}AM tomorrow", "back around 12:05\u{a0}PM (last 5 days)")
+            lines("Next cut usually around 9:10\u{a0}AM tomorrow", "back around 12:05\u{a0}PM (last 14 days)")
         );
     }
 
@@ -758,15 +810,15 @@ mod tests {
 
     #[test]
     fn next_cut_drops_run_open_at_oldest_day() {
-        // made-up: three days have a 00:00 cut, but on day −5 (10-13) it is the open run → 2 days, none
+        // made-up: three days have a 00:00 cut, but on day −14 (10-13) it is the open run → 2 days, none
         let o = made(&[
             ("2026-10-13 00:00", "2026-10-13 02:00"),
             ("2026-10-14 00:00", "2026-10-14 02:00"),
             ("2026-10-15 00:00", "2026-10-15 02:00"),
         ]);
-        assert_eq!(next_cut(&o, at("2026-10-18 20:00") as f64, false), None);
+        assert_eq!(next_cut(&o, at("2026-10-27 20:00") as f64, false), None);
         let o2: Vec<_> = o.iter().map(|x| Outage { start: x.start + 1, ..*x }).collect(); // 00:01: a real cut
-        assert!(next_cut(&o2, at("2026-10-18 20:00") as f64, false).is_some());
+        assert!(next_cut(&o2, at("2026-10-27 20:00") as f64, false).is_some());
     }
 
     // ---- since from history (rule (a)) ----

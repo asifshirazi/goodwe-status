@@ -8,8 +8,8 @@
                //   · 'Since 7:42 AM (38 min)' (history can't tell, but the app saw it go off)
                //   · 'Since at least 11:58 AM' (history can't tell and the app didn't see it go off)
                //   · 'Since at least 12:00 AM' · 'Since at least yesterday 12:00 AM' · absent while the first history call runs.
-               // T-002 back: 'Usually back around 12:05 PM (last 5 days)' only while off and the days agree; else absent.
-               // T-002 next (grid on): two lines, e.g. ['Next cut usually around 1:35 PM', 'back around 4:30 PM (last 5 days)']; else absent.
+               // T-002 back: 'Usually back around 12:05 PM (last 14 days)' only while off and the days agree; else absent.
+               // T-002 next (grid on): two lines, e.g. ['Next cut usually around 1:35 PM', 'back around 4:30 PM (last 14 days)']; else absent.
      refreshing: bool,   // T-002: a poll the user started (click, ⌘R, sign-in) is running; the icon spins. Timer polls: false.
      battery:  null | { soc: '86%', power: 'Discharging 998 W', left?: { time: '~4h 20m', rest: 'left at 1.0 kW' } },
      temps:    null | { inverter?: Temp, battery?: Temp },  // T-015: absent = that pair hidden; null = section hidden

@@ -56,7 +56,7 @@ impl Source for sems::Client {
 /// A past day is fetched for good once the station clock is this far past its end (the reply
 /// runs about 2 minutes behind, so a fetch at 00:01 would miss 23:58 and 23:59).
 const DAY_FINAL_AFTER_MIN: i64 = 10;
-/// Past days fetched per poll at most (cold start: 5 days over two polls).
+/// Past days fetched per poll at most (cold start: 14 days over five polls).
 const DAYS_PER_POLL: usize = 3;
 /// S7a: the On reading before the first Off one must be this close for an exact "Since 7:42 AM"
 /// (an On reading hours older, e.g. the Mac slept, doesn't show when the cut began).
@@ -503,7 +503,7 @@ impl Monitor {
     }
 
     /// After a poll's history calls: save what changed, then read the current outage's start.
-    /// Every day is kept (Stats); the predictions look at the last 5 only.
+    /// Every day is kept (Stats); the predictions look at the last 14 only.
     pub fn after_history(&mut self, now: i64) {
         self.persist();
         self.history_tried = true;
@@ -529,7 +529,7 @@ impl Monitor {
         self.last.as_ref().is_some_and(|r| r.battery.is_some())
     }
 
-    /// The 5 days before `today` all loaded with data: only then may a line say "(last 5 days)".
+    /// The 14 days before `today` all loaded with data: only then may a line say "(last 14 days)".
     pub fn past_days_loaded(&self, today: i64) -> bool {
         (today - PAST_DAYS..today).all(|d| self.history.get(&d).is_some_and(|g| g.newest.is_some()))
     }
@@ -1064,15 +1064,15 @@ mod tests {
         }));
         let alerts = |got: &[(u64, Option<String>, Option<f64>)]| got.iter().filter(|g| g.1.is_some() || g.2.is_some()).cloned().collect::<Vec<_>>();
         // poll 1: today + 3 past days, 60 s each, ends at 240 s; poll 2 at 360 s (2 min later),
-        // today + the last 2 past days, ends at 540 s; poll 3 at 660 s
-        tokio::time::sleep(Duration::from_secs(661)).await;
+        // today + 3 more past days, ends at 600 s; poll 3 at 720 s
+        tokio::time::sleep(Duration::from_secs(721)).await;
         let got = got.lock().unwrap().clone();
         assert_eq!(
             alerts(&got),
-            vec![(360, Some("Grid is off · battery 22%".to_owned()), None), (660, None, Some(19.6))],
+            vec![(360, Some("Grid is off · battery 22%".to_owned()), None), (720, None, Some(19.6))],
             "each alert at its reading, not 3-4 min later at the poll's end"
         );
-        assert!(got.iter().any(|g| g.0 == 540), "poll 2 really ran its slow day calls: {got:?}");
+        assert!(got.iter().any(|g| g.0 == 600), "poll 2 really ran its slow day calls: {got:?}");
         task.abort();
     }
 
@@ -1088,7 +1088,7 @@ mod tests {
         let full = || GridDay { newest: Some(1439), ..Default::default() };
         // newest first, at most 3 per poll
         assert_eq!(m.days_to_fetch(t), vec![today - 1, today - 2, today - 3]);
-        for d in (today - 5..today).rev() {
+        for d in (today - PAST_DAYS..today).rev() {
             m.on_day(d, full(), t);
         }
         // yesterday came before its end + 10 min: kept, refetched once from 00:10, then never
@@ -1096,12 +1096,12 @@ mod tests {
         assert_eq!(m.days_to_fetch(t + 5), vec![today - 1]);
         m.on_day(today - 1, full(), t + 5);
         assert_eq!(m.days_to_fetch(t + 600), Vec::<i64>::new());
-        // the next day: today's entry (fetched as "today") becomes yesterday; day −5 moves on, and
+        // the next day: today's entry (fetched as "today") becomes yesterday; day −14 moves on, and
         // the older days stay (T-015 § 4.1: Stats keeps every day)
         m.on_day(today, GridDay { newest: Some(1439), ..Default::default() }, t + 600);
         let t2 = t + DAY;
         m.after_history(t2);
-        assert!(m.history_final.contains(&(today - 5)));
+        assert!(m.history_final.contains(&(today - PAST_DAYS)));
         assert_eq!(m.days_to_fetch(t2), Vec::<i64>::new(), "today's partial entry waits for 00:10");
         assert_eq!(m.days_to_fetch(t2 + 5), vec![today]);
         // sign-out forgets everything
@@ -1114,7 +1114,8 @@ mod tests {
     async fn history_budget_retry_and_skip() {
         let r = |hhmm: &str| Ok(reading(&format!("10/18/2026 {hhmm}:00"), GridSignal::On, 90.0, 0.0));
         let chart = || Ok(ChartSeries { day: day_of("10/18/2026 00:00:00"), points: vec![] });
-        let (src, _) = fake(vec![r("11:22"), r("11:24"), r("11:26"), r("11:28")], vec![chart(), chart(), chart(), chart()]);
+        let polls = ["11:22", "11:24", "11:26", "11:28", "11:30", "11:32", "11:34"];
+        let (src, _) = fake(polls.iter().map(|t| r(t)).collect(), polls.iter().map(|_| chart()).collect());
         let today = day_of("10/18/2026 00:00:00");
         let net = || SemsError::Network("timeout".into());
         src.lock().await.fail = vec![(today - 1, net()), (today - 1, net()), (today - 4, net())];
@@ -1131,6 +1132,12 @@ mod tests {
         // the next poll: yesterday again, day −4 fails once and its retry gets it, then −5
         assert!(poll(&src, &mon).await.errors.is_empty());
         assert_eq!(take(), vec![today, today - 1, today - 4, today - 4, today - 5]);
+        // three more polls for days −6 to −14
+        for d in [today - 6, today - 9, today - 12] {
+            assert!(!mon.lock().unwrap().past_days_loaded(today));
+            poll(&src, &mon).await;
+            assert_eq!(take(), vec![today, d, d - 1, d - 2]);
+        }
         assert!(mon.lock().unwrap().past_days_loaded(today));
         // steady state: only today's call, as in T-001
         poll(&src, &mon).await;
@@ -1389,7 +1396,7 @@ mod tests {
                 wake.notify_one();
             }
         }));
-        tokio::time::sleep(Duration::from_secs(700)).await;
+        tokio::time::sleep(Duration::from_secs(900)).await;
         let (reads, calls) = (read_at.lock().unwrap().clone(), calls.lock().unwrap().clone());
         let alerts: Vec<_> = got.lock().unwrap().iter().filter(|g| g.1.is_some() || g.2.is_some()).cloned().collect();
         assert_eq!(alerts, vec![(reads[1], Some("Grid is off · battery 22%".to_owned()), None), (reads[2], None, Some(19.6))], "reads {reads:?}, walk {calls:?}");
