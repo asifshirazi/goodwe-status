@@ -4,6 +4,8 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-19
+
 ### Added
 - The panel shows the inverter and battery temperature, with Warm, Hot or Cold when a reading isn't fine and an arrow when it is rising or falling. A switch in Settings › General hides them.
 - A Stats tab in Settings: one day's power cuts in a table (grid off, grid on, how long) under a strip of the day. Step days with ← / →, jump to today with ⌘T, or pick a date in the calendar.
@@ -41,5 +43,6 @@ First release.
 - The panel no longer opens with Settings… highlighted.
 - The Settings window no longer jumps on the first click.
 
-[Unreleased]: https://github.com/asifshirazi/goodwe-status/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/asifshirazi/goodwe-status/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/asifshirazi/goodwe-status/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/asifshirazi/goodwe-status/releases/tag/v0.1.0
