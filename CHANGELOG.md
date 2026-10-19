@@ -4,6 +4,15 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ## [Unreleased]
 
+### Added
+- The panel shows the inverter and battery temperature, with Warm, Hot or Cold when a reading isn't fine and an arrow when it is rising or falling. A switch in Settings › General hides them.
+- A Stats tab in Settings: one day's power cuts in a table (grid off, grid on, how long) under a strip of the day. Step days with ← / →, jump to today with ⌘T, or pick a date in the calendar.
+- Every day's power-cut history is kept on this Mac, and the days since the station was set up load from SEMS once, in the background.
+
+### Changed
+- Settings › General: Account moved to the bottom, under a new Menu Bar group.
+- The grid-off red is a little deeper, so it stays readable over any desktop picture.
+
 ## [0.1.0] - 2026-10-19
 
 First release.

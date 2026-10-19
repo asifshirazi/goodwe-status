@@ -62,7 +62,42 @@ impl LocalTs {
     pub fn plus_secs(self, s: i64) -> LocalTs {
         LocalTs(self.0 + s)
     }
+    /// "Saturday, 17 October 2026" (Stats date button).
+    pub fn long_date(self) -> String {
+        format!("{}, {}", WEEKDAYS[self.weekday()], self.day_month_year())
+    }
+    /// "18 September 2026".
+    pub fn day_month_year(self) -> String {
+        format!("{} {}", self.day_month_long(), civil_from_days(self.day()).0)
+    }
+    /// "17 October".
+    pub fn day_month_long(self) -> String {
+        let (_, m, d) = civil_from_days(self.day());
+        format!("{d} {}", MONTHS[(m - 1) as usize])
+    }
+    /// "Wed" (a midnight cut's other day).
+    pub fn weekday_short(self) -> &'static str {
+        &WEEKDAYS[self.weekday()][..3]
+    }
+    /// "October 2026" (calendar head).
+    pub fn month_year(self) -> String {
+        let (y, m, _) = civil_from_days(self.day());
+        format!("{} {y}", MONTHS[(m - 1) as usize])
+    }
+    /// The day number of the 1st of `day`'s month, `step` months on (calendar).
+    pub fn month_start(day: i64, step: i64) -> i64 {
+        let (y, m, _) = civil_from_days(day);
+        let t = y * 12 + m - 1 + step;
+        days_from_civil(t.div_euclid(12), t.rem_euclid(12) + 1, 1)
+    }
+    /// 0 = Sunday.
+    pub fn weekday(self) -> usize {
+        (self.day() + 4).rem_euclid(7) as usize // 1970-01-01 was a Thursday
+    }
 }
+
+const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 // Howard Hinnant's civil date algorithms (proleptic Gregorian).
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
@@ -119,6 +154,24 @@ mod tests {
         assert_eq!(t("13:36"), "1:36\u{a0}PM");
         assert_eq!(t("23:58"), "11:58\u{a0}PM");
         assert!(!t("13:36").contains(' '), "AM/PM must not wrap away from its time");
+    }
+
+    #[test]
+    fn stats_dates() {
+        let t = |s: &str| LocalTs::parse(&format!("{s} 12:00:00")).unwrap();
+        assert_eq!(t("2026-10-17").long_date(), "Saturday, 17 October 2026");
+        assert_eq!(t("2026-09-18").long_date(), "Friday, 18 September 2026");
+        assert_eq!(t("2026-10-14").weekday_short(), "Wed");
+        assert_eq!(t("2028-02-29").long_date(), "Tuesday, 29 February 2028");
+        assert_eq!(t("1969-12-31").weekday_short(), "Wed");
+        assert_eq!(t("2026-10-01").day_month_long(), "1 October");
+        // calendar months: lengths, leap years, year ends, weekday of the 1st
+        let len = |s: &str| LocalTs::month_start(t(s).day(), 1) - LocalTs::month_start(t(s).day(), 0);
+        assert_eq!([len("2026-10-19"), len("2026-09-01"), len("2026-02-10"), len("2028-02-10"), len("2100-02-01"), len("2000-02-01")], [31, 30, 28, 29, 28, 29]);
+        assert_eq!(LocalTs::month_start(t("2026-12-31").day(), 1), t("2027-01-01").day());
+        assert_eq!(LocalTs::month_start(t("2026-01-15").day(), -1), t("2025-12-01").day());
+        assert_eq!((t("2026-10-01").weekday(), t("2026-09-01").weekday()), (4, 2)); // Thu, Tue
+        assert_eq!(t("2026-10-19").month_year(), "October 2026");
     }
 
     #[test]

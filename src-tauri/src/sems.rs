@@ -17,6 +17,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const CLASSIC_LOGIN: &str = "https://www.semsportal.com/api/v2/Common/CrossLogin";
@@ -31,6 +32,8 @@ const GRID_OFF_VOLTS: f64 = 50.0;
 const OFF_BALANCE_KW: f64 = 0.02;
 /// An off minute with the house drawing more than this (kW) proves the run is an outage.
 const LOADED_KW: f64 = 0.05;
+/// More missing minutes in a row than this are a gap (the outage merge gap, T-015 § 4.4).
+const GAP_MIN: u32 = 5;
 
 // ---------- what the rest of the app sees ----------
 
@@ -47,6 +50,11 @@ pub struct Reading {
     pub battery: Option<Battery>,
     /// Station's offset from UTC in hours (from `info.time_span`, which SEMS sends negated).
     pub utc_offset_h: Option<f64>,
+    /// Inverter (internal) and hottest battery pack temperature, °C; `None` when not a real reading (T-015).
+    pub inverter_c: Option<f64>,
+    pub battery_c: Option<f64>,
+    /// `info.create_time`: when the station was set up. SEMS+ has no history before it (T-015 spike).
+    pub created: Option<LocalTs>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -90,6 +98,8 @@ pub enum SemsError {
     Network(String),
     /// The session token stopped working: log in again once.
     Expired,
+    /// SEMS+ GY0429 or HTTP 429: too many calls, slow down (T-015 § 4.9).
+    RateLimited,
     /// The reply came but could not be read. `reply` is the raw body, for the redacted dump.
     Parse { reason: String, reply: String },
     /// No stored credentials.
@@ -102,6 +112,7 @@ impl std::fmt::Display for SemsError {
             SemsError::WrongLogin(m) => write!(f, "login refused: {m}"),
             SemsError::Network(m) => write!(f, "network: {m}"),
             SemsError::Expired => write!(f, "session expired"),
+            SemsError::RateLimited => write!(f, "rate limited"),
             SemsError::Parse { reason, .. } => write!(f, "unreadable reply: {reason}"),
             SemsError::SignedOut => write!(f, "not signed in"),
         }
@@ -167,6 +178,14 @@ pub fn parse_reading(v: &Value) -> Result<Reading, String> {
         _ => None,
     };
 
+    // T-015 § 1: the battery's only with a battery, as a number and not exactly 0.0 (0.0 = no BMS link).
+    let battery_c = full["more_batterys"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|b| b["bms_temperature"].as_f64())
+        .filter(|c| *c != 0.0 && battery.is_some())
+        .reduce(f64::max);
     Ok(Reading {
         time,
         grid: grid_signal(vac1, grid_status.as_deref()),
@@ -174,6 +193,9 @@ pub fn parse_reading(v: &Value) -> Result<Reading, String> {
         grid_status,
         battery,
         utc_offset_h: num(&info["time_span"]).map(|s| -s),
+        inverter_c: full["tempperature"].as_f64(), // sic
+        battery_c,
+        created: info["create_time"].as_str().and_then(LocalTs::parse),
     })
 }
 
@@ -192,6 +214,10 @@ pub fn parse_chart(v: &Value, day: i64) -> Result<ChartSeries, String> {
 /// The same reply → the day's grid-off minutes (research rule: pGrid exactly 0 and pBat equal
 /// to pConsum). Joins the three series by `tp`, never by position.
 pub fn parse_grid_day(v: &Value, day: i64) -> Result<GridDay, String> {
+    // A day SEMS+ has nothing for (before set-up, checked live 2026-10-19) answers `dataList: []`.
+    if check_plus_code(v).is_ok() && v["data"]["dataList"].as_array().is_some_and(Vec::is_empty) {
+        return Ok(GridDay::default());
+    }
     let series = plus_series(v, day)?;
     let (bat, load): (HashMap<u32, f64>, HashMap<u32, f64>) =
         (series("pBat")?.into_iter().collect(), series("pConsum")?.into_iter().collect());
@@ -204,7 +230,18 @@ pub fn parse_grid_day(v: &Value, day: i64) -> Result<GridDay, String> {
         .collect();
     off.sort_by_key(|p| p.0);
     off.dedup_by_key(|p| p.0);
-    Ok(GridDay { off, newest: joined.iter().map(|p| p.0).max() })
+    let mut seen: Vec<u32> = joined.iter().map(|p| p.0).collect();
+    seen.sort_unstable();
+    seen.dedup();
+    let newest = seen.last().copied();
+    // T-015 § 4.4: more than 5 minutes without a reading before the newest one (the head too) is a gap.
+    let gaps = seen
+        .iter()
+        .scan(None, |prev: &mut Option<u32>, &m| Some((prev.replace(m).map_or(0, |p| p + 1), m)))
+        .filter(|&(from, m)| m - from > GAP_MIN)
+        .map(|(from, m)| (from, m - 1))
+        .collect();
+    Ok(GridDay { off, gaps, newest })
 }
 
 /// (minute of day, value), one series of a SEMS+ power reply.
@@ -300,6 +337,7 @@ impl std::fmt::Debug for Credentials {
     }
 }
 
+#[derive(Clone)]
 struct Session {
     /// The login reply's `data`, JSON-encoded: sent as the `Token` header.
     token: String,
@@ -318,6 +356,8 @@ pub struct Client {
     creds: Option<Credentials>,
     classic: Option<Session>,
     plus: Option<Session>,
+    /// One SEMS+ day call at a time across the app: the poll's and the history walk's (T-015 § 4.7).
+    gate: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Client {
@@ -326,7 +366,7 @@ impl Client {
             .timeout(Duration::from_secs(20))
             .build()
             .expect("reqwest client"); // only fails if the TLS backend can't start
-        Client { http, creds, classic: None, plus: None }
+        Client { http, creds, classic: None, plus: None, gate: Default::default() }
     }
 
     pub fn signed_in(&self) -> bool {
@@ -352,6 +392,26 @@ impl Client {
         (self.creds, self.classic, self.plus) = (None, None, None);
     }
 
+    /// The signed-in station's id, once the classic login has run. Never logged (T-015 § 4.2).
+    pub fn station(&self) -> Option<String> {
+        self.classic.as_ref().map(|s| s.station.clone())
+    }
+
+    /// A past day's call that owns what it needs, so the caller can let the client go while it
+    /// runs (the history walk, T-015 § 4.7). `None`: no SEMS+ session yet; the poll's next day call makes one.
+    pub fn day_detached(&self, date: LocalTs, utc_offset_h: Option<f64>) -> Option<impl Future<Output = Result<Day, SemsError>> + Send + 'static> {
+        let (http, s, gate) = (self.http.clone(), self.plus.clone()?, self.gate.clone());
+        Some(async move {
+            let _one = gate.lock().await;
+            day_call(&http, &s, date, utc_offset_h).await
+        })
+    }
+
+    /// The walk saw the SEMS+ session expire: the poll's next day call signs in again.
+    pub fn plus_expired(&mut self) {
+        self.plus = None;
+    }
+
     /// The live reading; logs in when needed and once more on an expired token.
     pub async fn reading(&mut self) -> Result<Reading, SemsError> {
         for attempt in 0..2 {
@@ -374,31 +434,16 @@ impl Client {
     /// One station-local day from the SEMS+ gateway: today's chart and grid history in one
     /// call, or a past day's grid history (T-002 5a: one call per day, a 6-day range comes back empty).
     pub async fn day(&mut self, date: LocalTs, utc_offset_h: Option<f64>) -> Result<Day, SemsError> {
-        let (day, date) = (date.day(), date.date());
-        // timeZone is required (an empty list without it); SEMS+ labels `tp` station-local anyway.
-        let tz = utc_offset_h.unwrap_or(0.0).round() as i64;
+        let gate = self.gate.clone();
+        let _one = gate.lock().await;
         for attempt in 0..2 {
             if self.plus.is_none() {
                 let creds = self.creds.clone().ok_or(SemsError::SignedOut)?;
                 self.plus = Some(self.plus_login(&creds).await?);
             }
-            let s = self.plus.as_ref().expect("set above");
-            let body = json!({
-                "stationId": s.station, "items": ["soc", "pBat", "pGrid", "pConsum"], "timeScale": 1, "timeZone": tz,
-                "startTime": format!("{date} 00:00:00"), "endTime": format!("{date} 23:59:59"),
-            });
-            let url = format!("{}/sems-plant/api/v1/hems/power/statisticsAndPreV2", s.api);
-            // A day's reply is ~488 KB and SEMS+ is slow (10-20 s): 60 s here, the client's 20 s elsewhere (T-012).
-            match self.post_plus(&url, s, body, Some(DAY_TIMEOUT)).await {
-                Err(SemsError::Expired) if attempt == 0 => {
-                    self.plus = None;
-                    continue;
-                }
-                Err(e) => return Err(e),
-                Ok((v, raw)) => {
-                    let bad = |reason: String| SemsError::Parse { reason, reply: raw.clone() };
-                    return Ok(Day { chart: parse_chart(&v, day).map_err(bad), grid: parse_grid_day(&v, day).map_err(bad) });
-                }
+            match day_call(&self.http, self.plus.as_ref().expect("set above"), date, utc_offset_h).await {
+                Err(SemsError::Expired) if attempt == 0 => self.plus = None,
+                r => return r,
             }
         }
         Err(SemsError::Expired)
@@ -429,7 +474,7 @@ impl Client {
         let t0 = json!({"uid":"","token":"","timestamp":0,"client":"semsPlusWeb","version":"","language":"en"});
         let body = json!({ "account": c.account, "pwd": plus_pwd(&c.password), "agreement": 1, "isChinese": false, "isLocal": false });
         let anon = Session { token: t0.to_string(), api: String::new(), station: String::new(), uid: String::new(), raw_token: String::new() };
-        let (v, raw) = match self.post_plus(PLUS_LOGIN, &anon, body, None).await {
+        let (v, raw) = match post_plus(&self.http, PLUS_LOGIN, &anon, body, None).await {
             Err(SemsError::Parse { reason, reply }) if reason.starts_with("code ") => {
                 return Err(login_refused(&serde_json::from_str(&reply).unwrap_or_default(), "description"))
             }
@@ -441,7 +486,7 @@ impl Client {
         let raw_token = data["token"].as_str().ok_or_else(|| parse_err(missing("data.token")))?.to_owned();
         let api = data["api"].as_str().ok_or_else(|| parse_err(missing("data.api")))?.trim_end_matches('/').to_owned();
         let mut s = Session { token: data.to_string(), api, station: String::new(), uid, raw_token };
-        let (sv, sraw) = self.post_plus(&format!("{}/sems-plant/api/stations/simple-query", s.api), &s, json!({}), None).await?;
+        let (sv, sraw) = post_plus(&self.http, &format!("{}/sems-plant/api/stations/simple-query", s.api), &s, json!({}), None).await?;
         s.station = sv["data"]["dataList"][0]["id"]
             .as_str()
             .ok_or_else(|| SemsError::Parse { reason: missing("data.dataList[0].id"), reply: sraw })?
@@ -455,27 +500,43 @@ impl Client {
         Ok((v, raw))
     }
 
-    /// A signed SEMS+ call. Maps 401/C0602 to `Expired` and any other non-"00000" code to `Parse`.
-    async fn post_plus(&self, url: &str, s: &Session, body: Value, timeout: Option<Duration>) -> Result<(Value, String), SemsError> {
-        let mut req = self
-            .http
-            .post(url)
-            .header("Token", &s.token)
-            .header("X-Signature", x_signature(now_ms(), &s.uid, &s.raw_token))
-            .header("Origin", PLUS_ORIGIN)
-            .header("Referer", PLUS_ORIGIN)
-            .header("User-Agent", UA)
-            .header("Accept", "application/json, text/plain, */*")
-            .json(&body);
-        if let Some(t) = timeout {
-            req = req.timeout(t);
-        }
-        let (v, raw) = send(req).await?;
-        match v["code"].as_str() {
-            Some("C0602") => Err(SemsError::Expired),
-            Some("GY0429") => Err(SemsError::Network("rate limited".into())),
-            _ => check_plus_code(&v).map(|_| (v, raw.clone())).map_err(|reason| SemsError::Parse { reason, reply: raw }),
-        }
+}
+
+/// One station-local day from the SEMS+ gateway with a session in hand (no login, no retry).
+async fn day_call(http: &reqwest::Client, s: &Session, date: LocalTs, utc_offset_h: Option<f64>) -> Result<Day, SemsError> {
+    let (day, date) = (date.day(), date.date());
+    // timeZone is required (an empty list without it); SEMS+ labels `tp` station-local anyway.
+    let tz = utc_offset_h.unwrap_or(0.0).round() as i64;
+    let body = json!({
+        "stationId": s.station, "items": ["soc", "pBat", "pGrid", "pConsum"], "timeScale": 1, "timeZone": tz,
+        "startTime": format!("{date} 00:00:00"), "endTime": format!("{date} 23:59:59"),
+    });
+    let url = format!("{}/sems-plant/api/v1/hems/power/statisticsAndPreV2", s.api);
+    // A day's reply is ~488 KB and SEMS+ is slow (10-20 s): 60 s here, the client's 20 s elsewhere (T-012).
+    let (v, raw) = post_plus(http, &url, s, body, Some(DAY_TIMEOUT)).await?;
+    let bad = |reason: String| SemsError::Parse { reason, reply: raw.clone() };
+    Ok(Day { chart: parse_chart(&v, day).map_err(bad), grid: parse_grid_day(&v, day).map_err(bad) })
+}
+
+/// A signed SEMS+ call. Maps 401/C0602 to `Expired`, GY0429 to `RateLimited` and any other non-"00000" code to `Parse`.
+async fn post_plus(http: &reqwest::Client, url: &str, s: &Session, body: Value, timeout: Option<Duration>) -> Result<(Value, String), SemsError> {
+    let mut req = http
+        .post(url)
+        .header("Token", &s.token)
+        .header("X-Signature", x_signature(now_ms(), &s.uid, &s.raw_token))
+        .header("Origin", PLUS_ORIGIN)
+        .header("Referer", PLUS_ORIGIN)
+        .header("User-Agent", UA)
+        .header("Accept", "application/json, text/plain, */*")
+        .json(&body);
+    if let Some(t) = timeout {
+        req = req.timeout(t);
+    }
+    let (v, raw) = send(req).await?;
+    match v["code"].as_str() {
+        Some("C0602") => Err(SemsError::Expired),
+        Some("GY0429") => Err(SemsError::RateLimited),
+        _ => check_plus_code(&v).map(|_| (v, raw.clone())).map_err(|reason| SemsError::Parse { reason, reply: raw }),
     }
 }
 
@@ -485,7 +546,10 @@ async fn send(req: reqwest::RequestBuilder) -> Result<(Value, String), SemsError
     if status == reqwest::StatusCode::UNAUTHORIZED {
         return Err(SemsError::Expired);
     }
-    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(SemsError::RateLimited);
+    }
+    if status.is_server_error() {
         return Err(SemsError::Network(format!("HTTP {status}")));
     }
     let raw = resp.text().await.map_err(|e| SemsError::Network(e.without_url().to_string()))?;
@@ -593,9 +657,13 @@ mod tests {
         let g2 = parse_grid_day(&v2, d18).unwrap();
         assert!(!g2.off.iter().any(|p| p.0 == hm(9, 7) || p.0 == hm(9, 8)));
         assert!(g2.off.iter().any(|p| p.0 == hm(9, 9)));
-        // a reply without pGrid is unreadable, not "no outages"
+        // a reply without pGrid is unreadable, not "no outages"; an empty list is a day with no data (T-015)
         v2["data"]["dataList"][0]["item"] = json!("x");
         assert_eq!(parse_grid_day(&v2, d18).unwrap_err(), "field `dataList[item=pGrid]` missing");
+        v2["data"]["dataList"] = json!([]);
+        assert_eq!(parse_grid_day(&v2, d18), Ok(GridDay::default()));
+        v2["code"] = json!("C0001");
+        assert!(parse_grid_day(&v2, d18).is_err());
     }
 
     #[test]
@@ -623,6 +691,52 @@ mod tests {
         let mut v = sample("monitor-detail-grid-off.json");
         v["data"]["inverter"][0]["invert_full"]["soc"] = Value::Null;
         assert_eq!(parse_reading(&v).unwrap().battery, None);
+    }
+
+    #[test]
+    fn temperatures_and_create_time() {
+        let base = sample("monitor-detail-grid-off.json");
+        let r = parse_reading(&base).unwrap();
+        assert_eq!((r.inverter_c, r.battery_c), (Some(42.7), Some(25.0)));
+        assert_eq!(r.created, LocalTs::parse("09/18/2026 18:28:53"));
+        let with = |f: &dyn Fn(&mut Value)| {
+            let mut v = base.clone();
+            f(&mut v["data"]["inverter"][0]["invert_full"]);
+            parse_reading(&v).unwrap()
+        };
+        // the hottest pack; 0.0 is no BMS link, text and null are no reading
+        let r = with(&|f| f["more_batterys"] = json!([{ "bms_temperature": 31.5 }, { "bms_temperature": 0.0 }, { "bms_temperature": 33.2 }]));
+        assert_eq!(r.battery_c, Some(33.2));
+        assert_eq!(with(&|f| f["more_batterys"][0]["bms_temperature"] = json!(0.0)).battery_c, None);
+        assert_eq!(with(&|f| f["more_batterys"][0]["bms_temperature"] = json!("25")).battery_c, None);
+        assert_eq!(with(&|f| f["more_batterys"] = Value::Null).battery_c, None);
+        assert_eq!(with(&|f| f["more_batterys"][0]["bms_temperature"] = json!(-3.5)).battery_c, Some(-3.5), "below zero is real");
+        assert_eq!(with(&|f| f["tempperature"] = Value::Null).inverter_c, None);
+        // no battery: no battery temperature, the inverter's still
+        let r = with(&|f| f["soc"] = Value::Null);
+        assert_eq!((r.battery, r.inverter_c, r.battery_c), (None, Some(42.7), None));
+    }
+
+    /// A made-up SEMS+ reply for 2026-10-18 with a reading at each of `minutes` (grid on).
+    fn reply_at(minutes: impl Iterator<Item = u32> + Clone) -> Value {
+        let series = |item: &str, power: f64| {
+            let pts: Vec<Value> = minutes.clone().map(|m| json!({ "tp": format!("2026-10-18 {:02}:{:02}:00", m / 60, m % 60), "power": power })).collect();
+            json!({ "item": item, "powerData": pts })
+        };
+        json!({ "code": "00000", "data": { "dataList": [series("pGrid", 0.3), series("pBat", 0.0), series("pConsum", 0.3)] } })
+    }
+
+    #[test]
+    fn gaps_in_a_day() {
+        let d18 = LocalTs::parse("2026-10-18 00:00:00").unwrap().day();
+        let gaps = |v: Value| parse_grid_day(&v, d18).unwrap().gaps;
+        assert_eq!(gaps(reply_at(0..1440)), vec![], "a full day has none");
+        // 06:00-06:09 missing (10 min) is a gap; 07:00-07:04 (5 min) is bridged, like the outage merge gap
+        let holes = |m: &u32| !(360..=369).contains(m) && !(420..=424).contains(m);
+        assert_eq!(gaps(reply_at((0..1440).filter(holes))), vec![(360, 369)]);
+        // readings that start late: a gap from midnight; the minutes after the newest are not one (today, or a tail added when final)
+        assert_eq!(gaps(reply_at((60..1000).filter(holes))), vec![(0, 59), (360, 369)]);
+        assert_eq!(parse_grid_day(&reply_at(60..1000), d18).unwrap().newest, Some(999));
     }
 
     #[test]
@@ -672,8 +786,20 @@ mod tests {
         let y = LocalTs((r.time.day() - 1) * 86_400);
         let yd = c.day(y, r.utc_offset_h).await.unwrap_or_else(|e| panic!("{e}"));
         days.insert(y.day(), yd.grid.unwrap_or_else(|e| panic!("{e}")));
+        // T-015: temperatures, the set-up day, and a walk-style call that holds no &mut client.
+        println!("temps: inverter {:?} °C ({:?}), battery {:?} °C ({:?}); set up {:?}", r.inverter_c, r.inverter_c.map(crate::rules::fmt_temp), r.battery_c, r.battery_c.map(crate::rules::fmt_temp), r.created.map(|t| (t.date(), t.hhmm())));
+        let w = LocalTs((r.time.day() - 2) * 86_400);
+        let wd = c.day_detached(w, r.utc_offset_h).expect("a SEMS+ session after day()").await.unwrap_or_else(|e| panic!("{e}"));
+        days.insert(w.day(), wd.grid.unwrap_or_else(|e| panic!("{e}")));
+        if let Some(created) = r.created {
+            let first = c.day(created, r.utc_offset_h).await.unwrap_or_else(|e| panic!("{e}")).grid.unwrap_or_else(|e| panic!("{e}"));
+            println!("first day {}: newest {:?}, gaps {:?}", created.date(), first.newest, first.gaps);
+            let before = c.day(LocalTs((created.day() - 1) * 86_400), r.utc_offset_h).await.unwrap_or_else(|e| panic!("{e}"));
+            println!("day before set-up: newest {:?} (the walk never asks for it)", before.grid.map(|g| g.newest));
+        }
+        assert!(c.station().is_some_and(|s| !s.is_empty()));
         for (day, g) in &days {
-            println!("history {}: newest {:?}, {} off minutes", LocalTs(day * 86_400).date(), g.newest, g.off.len());
+            println!("history {}: newest {:?}, {} off minutes, {} runs, gaps {:?}", LocalTs(day * 86_400).date(), g.newest, g.off.len(), g.to_runs().len(), g.gaps);
         }
         let now = r.time.0 / 60;
         for o in crate::outages::outages(&days, r.time.day()) {
@@ -686,7 +812,7 @@ mod tests {
         let same = c.classic.as_ref().unwrap().station == c.plus.as_ref().unwrap().station;
         println!("classic and SEMS+ station ids equal: {same}");
         let station = &c.classic.as_ref().unwrap().station;
-        let leaked = std::fs::read_dir(samples_dir()).unwrap().filter(|e| std::fs::read_to_string(e.as_ref().unwrap().path()).unwrap().contains(station.as_str())).count();
+        let leaked = std::fs::read_dir(samples_dir()).unwrap().filter(|e| std::fs::read_to_string(e.as_ref().unwrap().path()).is_ok_and(|t| t.contains(station.as_str()))).count();
         println!("live station id present in {leaked} saved samples");
         assert_eq!(leaked, 0);
 

@@ -120,11 +120,76 @@ pub fn fmt_power(watts: f64) -> String {
 
 /// "(38 min)" under an hour, "(2h 15m)" from an hour.
 pub fn fmt_since_duration(min: i64) -> String {
+    format!("({})", fmt_duration(min))
+}
+
+/// "38 min" under an hour, "2h 15m" from an hour (Stats, T-015 § 3).
+pub fn fmt_duration(min: i64) -> String {
     let min = min.max(0);
     if min < 60 {
-        format!("({min} min)")
+        format!("{min} min")
     } else {
-        format!("({}h {}m)", min / 60, min % 60)
+        format!("{}h {}m", min / 60, min % 60)
+    }
+}
+
+/// When a temperature isn't fine (T-015 § 1). The one table of limits: checked against the
+/// datasheets at 5a (hand-off § 1 source note); Warm/Hot for the inverter are app thresholds
+/// (no internal-temperature limit is published), the battery's are common 48 V LFP limits.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TempLimits {
+    /// The heat bar's scale, 0 to this, °C.
+    pub scale: f64,
+    pub warm: f64,
+    pub hot: f64,
+    /// At or below: Cold (it can't charge).
+    pub cold: Option<f64>,
+}
+pub const INVERTER_TEMP: TempLimits = TempLimits { scale: 80.0, warm: 60.0, hot: 70.0, cold: None };
+pub const BATTERY_TEMP: TempLimits = TempLimits { scale: 60.0, warm: 40.0, hot: 50.0, cold: Some(0.0) };
+/// The heat bar never shrinks below this share of its track, so it never vanishes.
+const TEMP_LEVEL_MIN: f64 = 0.04;
+/// A trend needs the reading to have moved this much (°C)...
+pub const TREND_C: f64 = 2.0;
+/// ...against a reading at least this old (the app's own, kept in memory).
+pub const TREND_AFTER_S: i64 = 30 * 60;
+
+/// 'ok' | 'warm' | 'hot' | 'cold', on the unrounded value.
+pub fn temp_state(c: f64, lim: TempLimits) -> &'static str {
+    if c >= lim.hot {
+        "hot"
+    } else if c >= lim.warm {
+        "warm"
+    } else if lim.cold.is_some_and(|k| c <= k) {
+        "cold"
+    } else {
+        "ok"
+    }
+}
+
+/// The heat bar's fill, 0.04..1, on the unrounded value.
+pub fn temp_level(c: f64, lim: TempLimits) -> f64 {
+    (c / lim.scale).clamp(TEMP_LEVEL_MIN, 1.0)
+}
+
+/// "36°C", "−3°C" (U+2212): whole degrees, halves away from zero, never "−0°C".
+pub fn fmt_temp(c: f64) -> String {
+    let r = c.round();
+    if r < 0.0 {
+        format!("\u{2212}{}°C", -r)
+    } else {
+        format!("{}°C", r.abs())
+    }
+}
+
+/// 'up' / 'down' when `now` moved 2 °C or more from `then` (a reading at least 30 min old).
+pub fn temp_trend(then: f64, now: f64) -> Option<&'static str> {
+    if now - then >= TREND_C {
+        Some("up")
+    } else if then - now >= TREND_C {
+        Some("down")
+    } else {
+        None
     }
 }
 
@@ -235,6 +300,27 @@ mod tests {
         assert!(time_left_min(Some(5.1), 86.0, 50.0).is_some());
         // readout_idle_matches_battery_row (Rust half): the real on-grid idle, +30 W
         assert_eq!(fmt_power(30.0), "Battery idle");
+    }
+
+    #[test]
+    fn temperatures() {
+        // D-Y1: halves away from zero, −0 → 0°C, minus sign U+2212
+        assert_eq!(fmt_temp(36.5), "37°C");
+        assert_eq!(fmt_temp(-2.5), "\u{2212}3°C");
+        assert_eq!(fmt_temp(-0.4), "0°C");
+        assert_eq!(fmt_temp(36.4), "36°C");
+        assert_eq!(fmt_temp(0.0), "0°C");
+        // limits: inverter warm 60, hot 70; battery cold ≤ 0, warm 40, hot 50
+        let (i, b) = (INVERTER_TEMP, BATTERY_TEMP);
+        assert_eq!([59.9, 60.0, 69.9, 70.0, -5.0].map(|c| temp_state(c, i)), ["ok", "warm", "warm", "hot", "ok"]);
+        assert_eq!([0.0, 0.1, 39.9, 40.0, 50.0, -12.0].map(|c| temp_state(c, b)), ["cold", "ok", "ok", "warm", "hot", "cold"]);
+        // the unrounded value decides: 59.6 shows "60°C" but is still fine
+        assert_eq!((fmt_temp(59.6), temp_state(59.6, i)), ("60°C".into(), "ok"));
+        // heat bar: share of the scale, at least 4 %, at most 100 %
+        assert_eq!((temp_level(72.0, i), temp_level(42.0, b)), (0.9, 0.7));
+        assert_eq!((temp_level(-12.0, b), temp_level(1.0, i), temp_level(99.0, i)), (0.04, 0.04, 1.0));
+        // trend: 2 °C or more either way
+        assert_eq!((temp_trend(36.0, 38.0), temp_trend(36.0, 37.9), temp_trend(36.0, 34.0)), (Some("up"), None, Some("down")));
     }
 
     #[test]

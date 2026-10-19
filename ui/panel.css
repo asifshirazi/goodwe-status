@@ -6,7 +6,7 @@
 .gw-panel{
   --gw-label:rgba(0,0,0,.85); --gw-label-2:rgba(0,0,0,.60); --gw-label-3:rgba(0,0,0,.30);
   --gw-separator:rgba(0,0,0,.10); --gw-panel-bg:rgba(238,238,240,.86); --gw-panel-edge:rgba(0,0,0,.14);
-  --gw-highlight:#0063E1; --gw-on-highlight:#FFFFFF; --gw-red:#FF3B30; --gw-green:#248A3D; /* T-006: systemGreen, accessible (3.8:1 on the panel; #34C759 is 1.9:1) */
+  --gw-highlight:#0063E1; --gw-on-highlight:#FFFFFF; --gw-red:#D70015; /* T-015 D-O10: 3.4:1 or more over any desktop (#FF3B30 was 2.2:1) */ --gw-green:#248A3D; /* T-006: systemGreen, accessible (3.8:1 on the panel; #34C759 is 1.9:1) */
   --gw-soc:#0062CC; --gw-kw:#A84A00; --gw-kw-fill:rgba(168,74,0,.14); --gw-plot-text:rgba(0,0,0,.60);
   --gw-s1:4px; --gw-s2:8px; --gw-s3:12px; --gw-radius:12px; --gw-row-radius:6px;
   /* T-002 */
@@ -20,6 +20,7 @@
     --gw-label:rgba(255,255,255,.88); --gw-label-2:rgba(255,255,255,.60); --gw-label-3:rgba(255,255,255,.30);
     --gw-separator:rgba(255,255,255,.12); --gw-panel-bg:rgba(44,44,46,.86); --gw-panel-edge:rgba(255,255,255,.16);
     --gw-green:#30D158; /* T-006: systemGreen dark, 6.9:1 */
+    --gw-red:#FF6961; /* T-015 D-O10: 3.2:1 or more over any desktop */
     --gw-soc:#409CFF; --gw-kw:#FF9F0A; --gw-kw-fill:rgba(255,159,10,.16); --gw-plot-text:rgba(255,255,255,.60);
     /* T-002 */
     --gw-fill-hover:rgba(255,255,255,.10); --gw-fill-press:rgba(255,255,255,.18);
@@ -120,3 +121,31 @@
 .gw-tip-none{color:var(--gw-label-2)}
 @media (forced-colors:active){ .gw-tip{border-color:CanvasText} .gw-plot[data-plot]:focus-visible,.gw-icon-btn:focus-visible{outline-color:Highlight} }
 
+
+/* ---- T-015 · Temperatures ----
+   Icon, then two equal columns (Inverter | Battery). Each: label · value · word (only when not fine) · trend, and under it
+   a 3 pt heat bar on that reading's scale. An empty column stays empty, so nothing moves when a reading comes or goes.
+   D-O10: text tokens are 4.5:1 or more for the 86 % panel over a white, mid-grey or black desktop (light: Warm 4.8, Hot 4.6;
+   dark: Warm 6.3, Hot 4.7). The bar's orange and red are marks (the word carries the meaning), so they keep the system hues. */
+.gw-panel{--gw-warm:#6E4D00;--gw-hot:#B00012;--gw-bar-warm:#FF9500;--gw-bar-hot:#D70015}
+@media (prefers-color-scheme: dark){ .gw-panel{--gw-warm:#FFD60A;--gw-hot:#FFA39E;--gw-bar-warm:#FF9F0A;--gw-bar-hot:#FF453A} }
+.gw-temps .gw-row{display:grid;grid-template-columns:16px 1fr 1fr;column-gap:var(--gw-s2);align-items:start}
+.gw-temps .gw-ic{margin-top:1px}
+.gw-pair{display:flex;flex-direction:column;gap:5px;min-width:0}
+/* D-O9: the top line has the whole column; when it is full the arrow wraps onto a second line that is clipped. */
+.gw-pair-top{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:var(--gw-s1);white-space:nowrap;height:1lh;overflow:hidden}
+.gw-pair-top>span:first-child{color:var(--gw-label-2)}
+.gw-pair b{font-weight:600}
+.gw-pair em{font-style:normal;font-weight:600;font-size:12px}
+.gw-trend{align-self:center;display:inline-flex;color:var(--gw-label-2)} .gw-trend svg{width:10px;height:10px}
+.gw-meter{display:block;height:3px;margin-right:var(--gw-s3);border-radius:1.5px;background:var(--gw-separator);overflow:hidden}
+.gw-meter i{display:block;height:100%;border-radius:1.5px;background-repeat:no-repeat}
+/* Heat scale per reading: green while fine, orange at the Warm limit, red at Hot. Stops sit on each scale's limits:
+   inverter 0–80 °C (Warm 60 = 75 %, Hot 70 = 87.5 %), battery 0–60 °C (Warm 40 = 66.7 %, Hot 50 = 83.3 %). */
+.gw-meter.is-inverter i{background-image:linear-gradient(90deg,var(--gw-green) 0 55%,var(--gw-bar-warm) 75%,var(--gw-bar-hot) 87.5% 100%)}
+.gw-meter.is-battery i{background-image:linear-gradient(90deg,var(--gw-green) 0 48%,var(--gw-bar-warm) 66.7%,var(--gw-bar-hot) 83.3% 100%)}
+.gw-pair.is-cold .gw-meter i{background-image:none;background-color:var(--gw-label-3)} /* at or below 0 °C: a grey sliver, the word says Cold */
+.gw-pair.is-warm b,.gw-pair.is-warm em{color:var(--gw-warm)}
+.gw-pair.is-hot b,.gw-pair.is-hot em{color:var(--gw-hot)}
+.gw-pair.is-cold em{color:var(--gw-label)}
+@media (forced-colors:active){ .gw-meter{border:1px solid CanvasText} .gw-meter i{background:CanvasText} }

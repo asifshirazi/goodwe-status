@@ -1,11 +1,12 @@
-//! The Settings window (label `settings` in tauri.conf.json, hidden until opened): General and
-//! Automation panes behind a toolbar, under a native Overlay title bar that shows the pane's
+//! The Settings window (label `settings` in tauri.conf.json, hidden until opened): General,
+//! Automation and Stats panes behind a toolbar, under a native Overlay title bar that shows the pane's
 //! name. Rust builds the whole `settings-state` and sends it to this window only, on open and on
 //! every change; the page answers with `settings_action`. Changes apply at once.
 
 use crate::automation::{Automation, View, Which};
 use crate::monitor::Monitor;
 use crate::tuya::Keys;
+use crate::stats::{self, StatsView};
 use crate::{creds, logdir, shell, signin};
 use serde::Serialize;
 use serde_json::Value;
@@ -62,12 +63,20 @@ pub struct Settings {
 
 /// The pane to show: the last one shown, else General.
 pub fn pane(saved: Option<&str>) -> &'static str {
-    if saved == Some("automation") { "automation" } else { "general" }
+    match saved {
+        Some("automation") => "automation",
+        Some("stats") => "stats",
+        _ => "general",
+    }
 }
 
 /// The window title: the visible pane's name.
 pub fn title(pane: &str) -> &'static str {
-    if pane == "automation" { "Automation" } else { "General" }
+    match pane {
+        "automation" => "Automation",
+        "stats" => "Stats",
+        _ => "General",
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -75,6 +84,7 @@ pub struct State {
     pub pane: &'static str,
     pub account: Account,
     pub general: General,
+    pub stats: StatsView,
     #[serde(flatten)]
     pub auto: View,
 }
@@ -94,6 +104,19 @@ pub struct General {
     pub open_at_login: bool,
     /// Low battery alert, in % (T-008).
     pub low_battery: u8,
+    /// Show temperatures (T-015 § 2).
+    pub show_temps: bool,
+    /// What the inverter sends, for the switch's helper: 'both' | 'inverter' | 'none'.
+    pub temps: &'static str,
+}
+
+/// The helper's case from the last reading; before the first one, 'both' (T-015 § 2).
+pub fn temps_sent(m: &Monitor) -> &'static str {
+    match m.last.as_ref().map(|r| (r.inverter_c, r.battery_c)) {
+        Some((None, None)) => "none",
+        Some((Some(_), None)) => "inverter",
+        _ => "both",
+    }
 }
 
 pub fn account(m: &Monitor) -> Account {
@@ -103,12 +126,22 @@ pub fn account(m: &Monitor) -> Account {
 fn state(app: &AppHandle) -> Option<State> {
     let auto = app.try_state::<Arc<Automation>>()?;
     // The Monitor lock is let go before `view`, whose grid hook takes it again.
-    let account = account(&app.state::<Arc<Mutex<Monitor>>>().lock().unwrap());
+    let (account, temps, stats) = {
+        let m = app.state::<Arc<Mutex<Monitor>>>();
+        let m = m.lock().unwrap();
+        (account(&m), temps_sent(&m), stats::view(&m, std::time::Instant::now()))
+    };
     let view = auto.view(account.signed_in);
     Some(State {
         pane: pane(auto.pane().as_deref()),
         account,
-        general: General { open_at_login: app.state::<Settings>().open_at_login.load(Ordering::SeqCst), low_battery: auto.low_battery_pct() },
+        general: General {
+            open_at_login: app.state::<Settings>().open_at_login.load(Ordering::SeqCst),
+            low_battery: auto.low_battery_pct(),
+            show_temps: auto.show_temps(),
+            temps,
+        },
+        stats,
         auto: view,
     })
 }
@@ -143,6 +176,16 @@ pub fn open(app: &AppHandle) {
         return;
     }
     let p = pane(app.state::<Arc<Automation>>().pane().as_deref());
+    // Stats opens on today with the calendar shut, like Calendar does.
+    let shown = {
+        let mon = app.state::<Arc<Mutex<Monitor>>>();
+        let mut m = mon.lock().unwrap();
+        m.stats_cal = None;
+        m.stats_day.take().is_some()
+    };
+    if shown {
+        app.state::<Arc<tokio::sync::Notify>>().notify_one();
+    }
     show_pane(app, p);
     if let Some(s) = state(app).and_then(|s| serde_json::to_value(s).ok()) {
         let _ = app.emit_to(WIN, "settings-open", s);
@@ -216,6 +259,11 @@ pub async fn settings_action(app: AppHandle, a: Value) -> Result<(), String> {
             logdir::line(&dir, &format!("open at login: {}", err.unwrap_or_else(|| if now { "on" } else { "off" }.into())));
         }
         "logs" => shell::open_logs(&app),
+        "temps" => {
+            auto.set_show_temps(on);
+            app.state::<Arc<Mutex<Monitor>>>().lock().unwrap().show_temps = on;
+            shell::refresh(&app);
+        }
         "low_battery" => {
             if let Some(p) = a["pct"].as_u64() {
                 let p = auto.set_low_battery_pct(p.min(100) as u8);
@@ -257,6 +305,12 @@ pub async fn settings_action(app: AppHandle, a: Value) -> Result<(), String> {
         }
         "howto" => drop(app.opener().open_url(HOWTO, None::<&str>)),
         "close" => close(&app),
+        "day" | "today" | "calendar" | "cal_month" | "cal_day" | "retry" => {
+            let wake = stats::act(&mut app.state::<Arc<Mutex<Monitor>>>().lock().unwrap(), &a, std::time::Instant::now());
+            if wake {
+                app.state::<Arc<tokio::sync::Notify>>().notify_one(); // the day shown goes first (§ 4.8)
+            }
+        }
         _ => {}
     }
     refresh(&app);
@@ -318,8 +372,9 @@ mod tests {
     fn pane_restored_and_title_follows_pane() {
         assert_eq!(pane(None), "general", "the first time: General");
         assert_eq!(pane(Some("automation")), "automation");
+        assert_eq!(pane(Some("stats")), "stats");
         assert_eq!(pane(Some("something else")), "general");
-        assert_eq!((title("general"), title("automation")), ("General", "Automation"));
+        assert_eq!((title("general"), title("automation"), title("stats")), ("General", "Automation", "Stats"));
         // The pane is saved with the settings file (automation::settings_file_has_no_secret round-trips it).
         let p = std::env::temp_dir().join(format!("gw-pane-{}.json", std::process::id()));
         let auto = Automation::new(Some(p.clone()), crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), off_now: Box::new(|| None) });
@@ -388,11 +443,17 @@ mod tests {
     #[test]
     fn settings_state_shape() {
         let auto = Automation::new(None, crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), off_now: Box::new(|| None) });
-        let s = State { pane: "general", account: account(&Monitor::new(false)), general: General { open_at_login: true, low_battery: 20 }, auto: auto.view(false) };
+        let s = State {
+            pane: "general",
+            account: account(&Monitor::new(false)),
+            general: General { open_at_login: true, low_battery: 20, show_temps: true, temps: "both" },
+            stats: stats::view(&Monitor::new(false), std::time::Instant::now()),
+            auto: auto.view(false),
+        };
         let v = serde_json::to_value(s).unwrap();
-        for k in ["pane", "account", "general", "automation", "tuya", "devices", "add"] {
+        for k in ["pane", "account", "general", "stats", "automation", "tuya", "devices", "add"] {
             assert!(v.get(k).is_some(), "missing {k}: {v}");
         }
-        assert_eq!(v["general"], serde_json::json!({ "openAtLogin": true, "lowBattery": 20 }));
+        assert_eq!(v["general"], serde_json::json!({ "openAtLogin": true, "lowBattery": 20, "showTemps": true, "temps": "both" }));
     }
 }

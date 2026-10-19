@@ -12,6 +12,7 @@ pub mod sems;
 pub mod settings;
 pub mod shell;
 pub mod signin;
+pub mod stats;
 pub mod tuya;
 pub mod view;
 
@@ -59,6 +60,12 @@ pub fn run() {
             let client = Arc::new(tokio::sync::Mutex::new(sems::Client::new(None)));
             let (refresh_tx, refresh_rx) = tokio::sync::mpsc::channel::<()>(4);
             app.manage(refresh_tx);
+            // Wakes the history walk (T-015 § 4.6): at each poll's end, and when Stats shows another day.
+            let walk_wake = Arc::new(tokio::sync::Notify::new());
+            // Stats' calendar weeks start on the Mac's own first weekday (T-015 D-O7).
+            let d = log_dir.clone();
+            std::thread::spawn(move || logdir::line(&d, &format!("first weekday: {:?} (0 = Sunday)", stats::read_first_weekday())));
+            app.manage(walk_wake.clone());
             app.manage(mon.clone());
             app.manage(client.clone());
             logdir::line(&log_dir, "started");
@@ -85,13 +92,16 @@ pub fn run() {
             {
                 let mut m = mon.lock().unwrap();
                 m.low_pct = auto.low_battery_pct();
+                m.show_temps = auto.show_temps();
                 // Finished past days from the last run: the predictions don't wait for 5 fresh fetches.
                 if let Ok(d) = app.path().app_data_dir() {
-                    m.load_history(d.join("history.json"));
+                    if m.load_history(d.join("history.json")) {
+                        logdir::line(&log_dir, "history.json unreadable, starting fresh");
+                    }
                 }
             }
             // The tray item first: a Keychain prompt must never hold up the menu bar.
-            shell::setup(app, log_dir)?;
+            shell::setup(app, log_dir.clone())?;
             // The close button hides Settings (one instance, opened again by Settings…).
             let h = app.handle().clone();
             app.get_webview_window("settings").expect("settings window in tauri.conf.json").on_window_event(move |e| {
@@ -126,8 +136,18 @@ pub fn run() {
                     shell::refresh(&handle);
                     signin::open(&handle);
                 }
+                let (h, d) = (handle.clone(), log_dir.clone());
+                tauri::async_runtime::spawn(monitor::walk(client.clone(), mon.clone(), walk_wake.clone(), move |rep| {
+                    rep.errors.iter().for_each(|e| logdir::line(&d, e));
+                    rep.bad_replies.iter().for_each(|(reason, reply)| logdir::dump_bad_reply(&d, reason, reply));
+                    settings::refresh(&h);
+                }));
                 let h = handle.clone();
-                monitor::run(client, mon, refresh_rx, move |rep| shell::after_poll(&h, rep)).await;
+                monitor::run(client, mon, refresh_rx, move |rep| {
+                    shell::after_poll(&h, rep);
+                    walk_wake.notify_one();
+                })
+                .await;
             });
             Ok(())
         })

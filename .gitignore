@@ -34,3 +34,6 @@
 
 # This project's own Claude login
 /.claude-local/
+
+# Local living design reference (owner)
+/design/

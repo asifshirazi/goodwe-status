@@ -44,6 +44,8 @@ pub struct Store {
     pub pane: Option<String>,
     /// Settings › General › Low battery alert, in % (unset: `rules::LOW_BATTERY_DEFAULT`).
     pub low_battery_pct: Option<u8>,
+    /// Settings › General › Show temperatures (unset: on, T-015).
+    pub show_temps: Option<bool>,
 }
 
 impl Store {
@@ -423,6 +425,14 @@ impl Automation {
     }
     pub fn low_battery_pct(&self) -> u8 {
         self.st.lock().unwrap().store.low_battery_pct.map_or(crate::rules::LOW_BATTERY_DEFAULT, crate::rules::low_battery_pct)
+    }
+    pub fn show_temps(&self) -> bool {
+        self.st.lock().unwrap().store.show_temps.unwrap_or(true)
+    }
+    pub fn set_show_temps(&self, on: bool) {
+        let mut st = self.st.lock().unwrap();
+        st.store.show_temps = Some(on);
+        self.save(&st);
     }
     /// Saves the setting, kept in range; returns the value saved.
     pub fn set_low_battery_pct(&self, pct: u8) -> u8 {
@@ -990,7 +1000,7 @@ mod tests {
     async fn automation_skips_first_reading() {
         // The first reading after launch starts from Unknown: no notice, so no hook call.
         let mut m = Monitor::new(true);
-        let r = |t: &str, g| Reading { time: LocalTs::parse(t).unwrap(), grid: g, vac1: 0.0, grid_status: None, battery: None, utc_offset_h: None };
+        let r = |t: &str, g| Reading { time: LocalTs::parse(t).unwrap(), grid: g, vac1: 0.0, grid_status: None, battery: None, utc_offset_h: None, inverter_c: None, battery_c: None, created: None };
         let now = std::time::Instant::now();
         assert!(m.on_reading(r("2026-10-18 09:50:00", GridSignal::Off), now).is_none());
         let n = m.on_reading(r("2026-10-18 09:52:00", GridSignal::On), now).unwrap();

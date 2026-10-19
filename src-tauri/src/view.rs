@@ -19,6 +19,39 @@ pub struct PanelState {
     pub signed_in: bool,
     /// A poll the user started runs (Refresh, ⌘R, sign-in): the Refresh icon spins.
     pub refreshing: bool,
+    /// T-015 § 1: `null` when the switch is off or neither reading is real.
+    pub temps: Option<TempsView>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TempsView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inverter: Option<Temp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery: Option<Temp>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Temp {
+    pub text: String,
+    pub level: f64,
+    pub state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trend: Option<&'static str>,
+}
+
+/// Both temperatures of the reading shown; level, state and trend on the unrounded values. No
+/// trend while stale (the values, words and bars stay, like the battery %).
+fn temps(m: &Monitor, r: &crate::sems::Reading, stale: bool) -> Option<TempsView> {
+    let base = m.temp_base().filter(|_| !stale);
+    let one = |c: Option<f64>, then: Option<f64>, lim| {
+        c.map(|c| Temp { text: rules::fmt_temp(c), level: rules::temp_level(c, lim), state: rules::temp_state(c, lim), trend: then.and_then(|t| rules::temp_trend(t, c)) })
+    };
+    let v = TempsView {
+        inverter: one(r.inverter_c, base.and_then(|b| b.1), rules::INVERTER_TEMP),
+        battery: one(r.battery_c, base.and_then(|b| b.2), rules::BATTERY_TEMP),
+    };
+    (v.inverter.is_some() || v.battery.is_some()).then_some(v)
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -169,6 +202,7 @@ pub fn panel(m: &Monitor, now: Instant, notifications_off: bool) -> PanelState {
         chart: m.chart_view(now),
         signed_in: m.signed_in,
         refreshing,
+        temps: shown.filter(|_| m.show_temps).and_then(|r| temps(m, r, stale)),
     }
 }
 
@@ -208,6 +242,9 @@ mod tests {
             grid_status: None,
             battery: battery.map(|(soc, watts)| Battery { soc, watts, capacity_kwh: Some(5.1) }),
             utc_offset_h: Some(5.0),
+            inverter_c: None,
+            battery_c: None,
+            created: None,
         }
     }
     const MIN: Duration = Duration::from_secs(60);
@@ -227,6 +264,49 @@ mod tests {
         assert_eq!((p.status.kind, p.updated, p.notifications_off), ("first", None, true));
         assert_eq!(p.chart.unwrap().status, "loading");
         assert_eq!(tray(&m, t0), TrayLook { icon: TrayIcon::Plug, title: None, tooltip: "Getting the first reading…".into() });
+    }
+
+    #[test]
+    fn panel_temperatures() {
+        let t0 = Instant::now();
+        let mut m = Monitor::new(true);
+        let at = |m: &mut Monitor, hhmm: &str, inv: Option<f64>, bat: Option<f64>| {
+            let mut r = reading(&format!("10/18/2026 {hhmm}:00"), GridSignal::On, Some((90.0, 0.0)));
+            (r.inverter_c, r.battery_c) = (inv, bat);
+            m.on_reading(r, t0);
+        };
+        let temps = |m: &Monitor, t| serde_json::to_value(panel(m, t, false).temps).unwrap();
+        assert_eq!(panel(&m, t0, false).temps, None, "no section before the first reading");
+        at(&mut m, "08:00", Some(40.0), Some(42.0));
+        assert_eq!(
+            temps(&m, t0),
+            serde_json::json!({ "inverter": { "text": "40°C", "level": 0.5, "state": "ok" }, "battery": { "text": "42°C", "level": 0.7, "state": "warm" } })
+        );
+        // 30 min later, moved 2 °C or more: arrows; the unrounded value decides
+        at(&mut m, "08:30", Some(42.5), Some(43.9));
+        let v = temps(&m, t0);
+        assert_eq!((v["inverter"]["text"].as_str(), v["inverter"]["trend"].as_str(), v["battery"].get("trend")), (Some("43°C"), Some("up"), None));
+        // stale: values and words stay, arrows go
+        let v = temps(&m, t0 + 16 * MIN);
+        assert_eq!((v["inverter"]["text"].as_str(), v["inverter"].get("trend"), v["battery"]["state"].as_str()), (Some("43°C"), None, Some("warm")));
+        // one reading missing: its pair goes; neither, or the switch off: no section
+        at(&mut m, "08:35", Some(72.0), None);
+        assert_eq!(temps(&m, t0), serde_json::json!({ "inverter": { "text": "72°C", "level": 0.9, "state": "hot", "trend": "up" } }));
+        at(&mut m, "08:40", None, Some(-12.0));
+        assert_eq!(temps(&m, t0)["battery"], serde_json::json!({ "text": "\u{2212}12°C", "level": 0.04, "state": "cold", "trend": "down" }));
+        m.show_temps = false;
+        assert_eq!(panel(&m, t0, false).temps, None);
+        m.show_temps = true;
+        at(&mut m, "08:45", None, None);
+        assert_eq!(panel(&m, t0, false).temps, None);
+        // the switch survives Sign Out, and Settings' helper reads the last reading
+        assert_eq!(crate::settings::temps_sent(&m), "none");
+        at(&mut m, "08:50", Some(36.0), None);
+        assert_eq!(crate::settings::temps_sent(&m), "inverter");
+        m.show_temps = false;
+        m.reset(false);
+        assert!(!m.show_temps && m.temps.is_empty());
+        assert_eq!(crate::settings::temps_sent(&m), "both", "before the first reading");
     }
 
     #[test]
@@ -329,7 +409,7 @@ mod tests {
     fn sample_day(d: &str, upto: Option<u32>) -> GridDay {
         let g = crate::sems::parse_grid_day(&fixture()["reply"], day(&format!("{d} 00:00"))).unwrap();
         match upto {
-            Some(u) => GridDay { off: g.off.into_iter().filter(|p| p.0 <= u).collect(), newest: Some(u) },
+            Some(u) => GridDay { off: g.off.into_iter().filter(|p| p.0 <= u).collect(), newest: Some(u), ..Default::default() },
             None => g,
         }
     }

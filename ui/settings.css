@@ -1,4 +1,4 @@
-/* Settings window. Two panes (General, Automation) behind a toolbar; each pane is a macOS System Settings form:
+/* Settings window. Three panes (General, Automation, Stats) behind a toolbar; each pane is a macOS System Settings form:
    headed groups of rows, label left, control right. Tokens: the sign-in box's (ui/signin.html) plus the ones marked new. */
 /* D-R3: without this WebKit draws native controls (pop-ups) in their light look in dark mode. Ships. */
 :root{color-scheme:light dark}
@@ -8,6 +8,8 @@
   /* new */ --link:#0068DA; --group:rgba(255,255,255,.62); --group-edge:rgba(0,0,0,.07); --separator:rgba(0,0,0,.08);
   --toolbar:#E6E6E6; --tab-selected:rgba(0,0,0,.08); --tab-label:rgba(0,0,0,.60); --tab-icon-selected:#0063E1; --popup-placeholder:rgba(0,0,0,.55); --control-shadow:0 0 0 .5px rgba(0,0,0,.15),0 1px 1px rgba(0,0,0,.06); --fill-hover:rgba(0,0,0,.07); --switch-off:rgba(0,0,0,.10); --switch-edge:rgba(0,0,0,.45); --knob:#FFFFFF; --knob-edge:rgba(0,0,0,.22);
   --press:150ms; --ease-out:cubic-bezier(.23,1,.32,1);
+  /* T-015 */ --tip-bg:rgba(255,255,255,.97); --tip-edge:rgba(0,0,0,.10); --tip-shadow:0 4px 12px rgba(0,0,0,.18),0 1px 3px rgba(0,0,0,.12); --grid-off:#D70015; --track:rgba(0,0,0,.07); --popover:#FFFFFF; --cal-sel:#0063E1;
+  --popover-shadow:0 0 0 .5px rgba(0,0,0,.18),0 8px 24px rgba(0,0,0,.16),0 2px 6px rgba(0,0,0,.08);
 }
 @media (prefers-color-scheme: dark){
   :root{
@@ -15,6 +17,8 @@
     --error-text:#FF7F78; --window:#2A2A2A; --field:rgba(255,255,255,.06); --field-edge:rgba(255,255,255,.14); --button:rgba(255,255,255,.14);
     --link:#5CACFF; --group:rgba(255,255,255,.05); --group-edge:rgba(255,255,255,.08); --separator:rgba(255,255,255,.09);
     --toolbar:#323232; --tab-selected:rgba(255,255,255,.12); --tab-label:rgba(255,255,255,.60); --tab-icon-selected:#5CACFF; --popup-placeholder:rgba(255,255,255,.85); --control-shadow:0 0 0 .5px rgba(255,255,255,.14),0 1px 1px rgba(0,0,0,.30); --fill-hover:rgba(255,255,255,.10); --switch-off:rgba(255,255,255,.16); --switch-edge:rgba(255,255,255,.40); --knob-edge:rgba(0,0,0,.35);
+    /* T-015 */ --tip-bg:rgba(58,58,60,.97); --tip-edge:rgba(255,255,255,.14); --tip-shadow:0 4px 12px rgba(0,0,0,.45),0 1px 3px rgba(0,0,0,.35); --grid-off:#FF6961; --track:rgba(255,255,255,.09); --popover:#353535; --cal-sel:#0071E3;
+    --popover-shadow:0 0 0 .5px rgba(255,255,255,.16),0 8px 24px rgba(0,0,0,.50),0 2px 6px rgba(0,0,0,.30);
   }
 }
 html,body{margin:0;padding:0;height:100%;background:var(--window)}
@@ -98,3 +102,76 @@ a:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparen
 h2.first{margin-top:0}
 .lbl small.one{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .connecting{font-size:12px;color:var(--label-2)} .connecting .spin{margin-right:5px}
+
+/* ---- T-015 · Stats pane ----
+   One height on every day (spec › Window height): header 22 · 12 · group (summary 66 + table 202) · footer ≥ 42. */
+.st-head{position:relative;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.st-head svg{width:14px;height:14px;flex:none}
+.st-date{display:inline-flex;align-items:center;gap:6px;padding:0 8px 0 7px} /* 1 pt less on the icon side (optical) */
+.st-date svg:last-child{width:10px;height:10px;color:var(--label-2)}
+/* Day stepper: one segmented control, as Calendar's ‹ Today › (HIG › Segmented controls, momentary). */
+.seg{display:inline-flex;height:22px;border-radius:5px;background:var(--button);box-shadow:var(--control-shadow);border:1px solid transparent;overflow:hidden}
+.seg button{all:unset;display:grid;place-items:center;min-width:26px;padding:0 8px;font-size:13px;color:var(--label);position:relative;transition:background-color var(--press) ease-out}
+.seg button+button::before{content:"";position:absolute;left:0;top:4px;bottom:4px;width:1px;background:var(--separator)}
+.seg button:first-child,.seg button:last-child{padding:0 6px}
+.seg button:not([aria-disabled="true"]):active{background:var(--fill-hover)}
+.seg button[aria-disabled="true"]{color:var(--label-disabled)}
+.seg button:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent);outline-offset:-2px;border-radius:5px}
+.st-sum{padding:10px 12px 6px}
+.st-sum p{margin:0 0 8px}
+.strip{display:block;overflow:visible}
+.strip .track{fill:var(--track)} .strip .cut{fill:var(--grid-off);transition:opacity var(--press) ease-out}
+/* Strip read-out (owner): the panel chart's tooltip card (same tokens as panel.css › T-002), centred above the cut. */
+.st-plot{position:relative;border-radius:4px;outline:none}
+.st-plot:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent);outline-offset:4px}
+.strip .hit{fill:transparent;cursor:default}
+.st-plot.is-reading .cut:not(.is-on){opacity:.4}
+.st-tip{position:absolute;z-index:1;bottom:calc(100% + 2px);min-width:120px;max-width:220px;padding:4px 8px;border-radius:8px;pointer-events:none;
+  background:var(--tip-bg);border:1px solid transparent;box-shadow:0 0 0 .5px var(--tip-edge),var(--tip-shadow);font-size:12px;line-height:16px;color:var(--label);white-space:nowrap}
+.st-tip[hidden]{display:none}
+.st-tip p{margin:0}
+.st-tip-time{font-size:11px;line-height:14px;color:var(--label-2);margin-bottom:4px !important;font-variant-numeric:tabular-nums}
+.st-tip-row{display:flex;align-items:center;gap:4px}
+.st-tip-row i{flex:none;width:8px;height:2px;border-radius:1px;background:var(--grid-off)}
+.st-tip-row span{flex:1;color:var(--label-2)} .st-tip-row b{font-weight:600;margin-left:8px}
+.st-rows .st-tr.is-on{background:var(--fill-hover)}
+.st-rows .st-tr.is-on::before,.st-rows .st-tr.is-on+.st-tr::before{opacity:0}
+@media (forced-colors:active){ .st-tip{border-color:CanvasText} }
+.strip .track-rest{fill:none;stroke:var(--label-2);stroke-dasharray:2 3} /* D-Y2: 4.7:1 / 4.9:1, the only mark for unknown hours */
+.strip .now{stroke:var(--label);stroke-width:1.5;stroke-linecap:round}
+.strip text{font-size:10px;fill:var(--label-2);font-variant-numeric:tabular-nums}
+.st-table{border-top:1px solid var(--separator)}
+.st-tr{display:grid;grid-template-columns:1fr 1fr 1fr;align-items:center;gap:12px;min-height:32px;padding:0 12px;position:relative;font-variant-numeric:tabular-nums}
+.st-tr>span:last-child{justify-self:end}
+.st-rows .st-tr+.st-tr::before{content:"";position:absolute;top:0;left:12px;right:12px;height:1px;background:var(--separator)}
+.st-th{min-height:26px;font-size:11px;color:var(--label-2);border-bottom:1px solid var(--separator)}
+.st-rows{height:176px;overflow:auto;overscroll-behavior:contain} /* 5½ rows of 32: a 6th row peeks, so a longer day shows it scrolls */
+.st-tr em{font-style:normal;color:var(--label-2)}
+.st-tr.is-running b{font-weight:600}
+.st-msg{height:202px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:0 24px;text-align:center;color:var(--label-2)}
+.st-msg p{margin:0;max-width:40ch}
+.st-foot{display:flow-root;min-height:48px} /* flow-root keeps the note's margin inside, so every state is one height */
+.st-line{display:flex;align-items:center;gap:8px;margin:6px 2px 0;font-size:11px;color:var(--label-2)}
+.st-line svg{width:13px;height:13px;flex:none;color:var(--label)}
+.st-line .btn{margin-left:auto}
+.bar{flex:none;width:120px;height:4px;border-radius:2px;background:var(--track);overflow:hidden}
+.bar i{display:block;height:100%;border-radius:2px;background:var(--accent)}
+/* Calendar: a popover under the date button (NSDatePicker's graphical calendar). */
+.cal{position:absolute;z-index:2;top:30px;left:0;width:236px;padding:10px 12px 10px;border-radius:10px;border:1px solid transparent;background:var(--popover);box-shadow:var(--popover-shadow)}
+.cal-head{display:flex;align-items:center;gap:2px;margin-bottom:6px}
+.cal-head b{flex:1;font-weight:600;padding-left:2px}
+.cal-head .rm[aria-disabled="true"]{color:var(--label-disabled)}
+@media (hover:hover){ .cal-head .rm[aria-disabled="true"]:hover{background:none;color:var(--label-disabled)} }
+.cal-grid{display:grid;grid-template-columns:repeat(7,30px);row-gap:2px}
+.cal .wd{height:18px;display:grid;place-items:center;font-size:10px;color:var(--label-2)}
+.cal .day{all:unset;position:relative;width:28px;height:28px;margin:0 auto;border-radius:50%;display:grid;place-items:center;font-size:12px;font-variant-numeric:tabular-nums;color:var(--label)}
+.cal .day.has-cut::after{content:"";position:absolute;bottom:3px;left:50%;width:4px;height:4px;margin-left:-2px;border-radius:50%;background:var(--grid-off)}
+.cal .day.is-today{color:var(--link);font-weight:600}
+.cal .day[aria-disabled="true"]{color:var(--label-disabled)}
+@media (hover:hover){ .cal .day:not([aria-disabled="true"]):not(.is-sel):hover{background:var(--fill-hover)} }
+.cal .day.is-sel{background:var(--cal-sel);color:#fff;font-weight:600}
+.cal .day.is-sel::after{background:#fff}
+.cal .day:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent);outline-offset:1px}
+.cal-key{display:flex;align-items:center;gap:6px;margin:8px 2px 0;font-size:11px;color:var(--label-2)}
+.cal-key i{width:4px;height:4px;border-radius:50%;background:var(--grid-off)}
+@media (forced-colors:active){ .strip .cut{fill:Highlight} .cal .day.is-sel{background:Highlight;color:HighlightText} .cal .day.has-cut::after,.cal-key i{background:CanvasText} }

@@ -28,13 +28,37 @@ const WINDOW: i64 = 30;
 /// ...on at least this many days.
 const AGREE_DAYS: usize = 3;
 
-/// One station-local day of history. Serde: the finished past days are kept on disk (T-012).
-#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+/// One station-local day of history. Deserialize: the v0.1.0 history file held these (T-012);
+/// the file now stores runs (`to_runs`, T-015 § 4.2).
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
 pub struct GridDay {
     /// Minutes of the day that were off, sorted, each with "the house drew load" then.
     pub off: Vec<(u32, bool)>,
+    /// Minutes with no reading, (first, last), more than 5 in a row (T-015 § 4.4).
+    #[serde(default)]
+    pub gaps: Vec<(u32, u32)>,
     /// The newest minute with a reading; `None` when the day came back empty.
     pub newest: Option<u32>,
+}
+
+impl GridDay {
+    /// `off` as (first, last, loaded) runs of consecutive minutes with the same load flag.
+    pub fn to_runs(&self) -> Vec<(u32, u32, bool)> {
+        let mut out: Vec<(u32, u32, bool)> = Vec::new();
+        for &(m, l) in &self.off {
+            match out.last_mut() {
+                Some(r) if r.1 + 1 == m && r.2 == l => r.1 = m,
+                _ => out.push((m, m, l)),
+            }
+        }
+        out
+    }
+    pub fn from_runs(runs: &[(u32, u32, bool)], gaps: Vec<(u32, u32)>, newest: Option<u32>) -> GridDay {
+        GridDay { off: runs.iter().flat_map(|&(a, b, l)| (a..=b.min(DAY as u32 - 1)).map(move |m| (m, l))).collect(), gaps, newest }
+    }
+    pub fn gap_minutes(&self) -> u32 {
+        self.gaps.iter().map(|g| g.1 + 1 - g.0).sum()
+    }
 }
 
 /// `end` is the last off minute (09:07 to 12:03 is 177 minutes inclusive, length 176).
@@ -326,7 +350,7 @@ pub mod testdata {
                     .filter(|m| table.iter().any(|o| (o.0..=o.1).contains(&(d * DAY + m))))
                     .map(|m| (m as u32, true))
                     .collect();
-                (d, GridDay { off, newest: Some(last as u32) })
+                (d, GridDay { off, newest: Some(last as u32), ..Default::default() })
             })
             .collect()
     }
@@ -371,9 +395,19 @@ mod tests {
             .chain((566..=569).map(|m| (m, true)))
             .chain((600..=610).map(|m| (m, false)))
             .collect();
-        days.insert(20_000, GridDay { off, newest: Some(610) });
+        days.insert(20_000, GridDay { off, newest: Some(610), ..Default::default() });
         let o = outages(&days, 20_000);
         assert_eq!(o, vec![Outage { start: 20_000 * DAY + 547, end: 20_000 * DAY + 560, running: false }]);
+    }
+
+    #[test]
+    fn runs_round_trip() {
+        let off: Vec<(u32, bool)> = vec![(0, true), (1, true), (2, false), (5, false), (6, false), (1439, true)];
+        let g = GridDay { off, gaps: vec![(100, 200)], newest: Some(1439) };
+        assert_eq!(g.to_runs(), vec![(0, 1, true), (2, 2, false), (5, 6, false), (1439, 1439, true)]);
+        assert_eq!(GridDay::from_runs(&g.to_runs(), g.gaps.clone(), g.newest), g);
+        assert_eq!(g.gap_minutes(), 101);
+        assert!(GridDay::from_runs(&[(1430, 99_999, true)], vec![], None).off.len() == 10, "an edited file can't grow a day past 23:59");
     }
 
     #[test]

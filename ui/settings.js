@@ -1,6 +1,6 @@
 /* The Settings window. Rust sends `settings-open` / `settings-state` (shape: hand-off spec › State and actions, copy already
    formatted); GWS.renderSettings(state) returns the window's HTML; every control answers with `settings_action`.
-   Two panes behind a noncustomizable toolbar (General, Automation); the native title bar shows the pane's name. */
+   Three panes behind a noncustomizable toolbar (General, Automation, Stats); the native title bar shows the pane's name. */
 (function (root) {
   'use strict';
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -10,7 +10,15 @@
   // Toolbar glyphs, 22 pt, same stroke family as the panel's icons (gear = the panel's Settings… icon).
   const GEAR = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"><path d="M14.22 7.00L14.22 9.00L12.77 9.13L12.17 10.57L13.11 11.69L11.69 13.11L10.57 12.17L9.13 12.77L9.00 14.22L7.00 14.22L6.87 12.77L5.43 12.17L4.31 13.11L2.89 11.69L3.83 10.57L3.23 9.13L1.78 9.00L1.78 7.00L3.23 6.87L3.83 5.43L2.89 4.31L4.31 2.89L5.43 3.83L6.87 3.23L7.00 1.78L9.00 1.78L9.13 3.23L10.57 3.83L11.69 2.89L13.11 4.31L12.17 5.43L12.77 6.87Z"/><circle cx="8" cy="8" r="2.1"/></svg>';
   const BOLT = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"><path d="M9.2 1.6L3.6 9.1h4.1l-1 5.3 5.7-7.6H8.3z"/></svg>';
-  const PANES = [['general', 'General', GEAR], ['automation', 'Automation', BOLT]];
+  // T-015: bars, the same 16 grid and 1.1 stroke (SF Symbols' chart.bar).
+  const BARS = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"><rect x="2.2" y="8.6" width="2.8" height="5.2" rx=".7"/><rect x="6.6" y="2.2" width="2.8" height="11.6" rx=".7"/><rect x="11" y="5.6" width="2.8" height="8.2" rx=".7"/></svg>';
+  const PANES = [['general', 'General', GEAR], ['automation', 'Automation', BOLT], ['stats', 'Stats', BARS]];
+  // T-015 Stats glyphs (14 grid, the panel's 1.4 stroke).
+  const CH = d => `<svg viewBox="0 0 14 14" ${S}><path d="${d}"/></svg>`;
+  const LEFT = CH('M8.6 3L4.6 7l4 4'), RIGHT = CH('M5.4 3l4 4-4 4'), DOWN = CH('M3.5 5.5L7 9l3.5-3.5');
+  const CAL = `<svg viewBox="0 0 14 14" ${S}><rect x="1.8" y="2.6" width="10.4" height="9.6" rx="1.8"/><path d="M1.8 5.6h10.4M4.6 1.4v2.2M9.4 1.4v2.2"/></svg>`;
+  const WARN = `<svg viewBox="0 0 14 14" ${S}><path d="M7 1.9l5.5 9.7h-11z"/><path d="M7 5.8v2.6"/><path d="M7 10.1v.1"/></svg>`;
+
   // Delay pop-up (seconds → label). One value per device, used both ways; 0 = at once.
   const DELAYS = [[0, 'Instant'], [30, '30 s'], [60, '1 min'], [120, '2 min'], [300, '5 min'], [600, '10 min'], [900, '15 min'], [1800, '30 min']];
   const sw = (k, on, label, off) => `<button type="button" class="switch" role="switch" data-k="${k}" data-action="${k}" aria-checked="${on}" aria-label="${esc(label)}"${off ? ' aria-disabled="true"' : ''}><i></i></button>`;
@@ -22,9 +30,16 @@
     const body = a.signedIn
       ? `<div class="lbl"><span>SEMS Portal</span><small class="one" title="${esc(a.email || '')}">${a.email ? 'Signed in as ' + esc(a.email) : 'Signed in'}</small></div>${btn('signout', 'Sign Out')}`
       : `<div class="lbl"><span>SEMS Portal</span><small>Not signed in. Sign in to see your battery and grid.</small></div>${btn('signin', 'Sign In…')}`;
-    return `<h2 class="first">Account</h2><section class="grp"><div class="row">${body}</div></section>`;
+    // T-015: Account is the last group of General (owner), as Tuya is the last of Automation.
+    return `<h2>Account</h2><section class="grp"><div class="row">${body}</div></section>`;
   }
-  const startup = g => `<h2>Startup</h2><section class="grp"><div class="row"><div class="lbl"><span>Open at login</span><small>Start GoodWe Status in the menu bar when you log in.</small></div>${sw('login', g.openAtLogin, 'Open at login')}</div></section>`;
+  const startup = g => `<h2 class="first">Startup</h2><section class="grp"><div class="row"><div class="lbl"><span>Open at login</span><small>Start GoodWe Status in the menu bar when you log in.</small></div>${sw('login', g.openAtLogin, 'Open at login')}</div></section>`;
+  // T-015: the panel's temperature row. The helper says what the panel will really show (temps: 'both' | 'inverter' | 'none').
+  const menuBar = g => {
+    const help = { inverter: 'This inverter doesn’t send a battery temperature, so the panel shows the inverter’s only.',
+      none: 'This inverter doesn’t send its temperatures.' }[g.temps] || 'Show the inverter and battery temperature in the panel.';
+    return `<h2>Menu Bar</h2><section class="grp"><div class="row"><div class="lbl"><span>Show temperatures</span><small>${help}</small></div>${sw('temps', g.showTemps && g.temps !== 'none', 'Show temperatures', g.temps === 'none')}</div></section>`;
+  };
   // T-008: one alert at the setting and one at half of it (Rust: rules::low_battery, integer half), only while the grid is off.
   const LOW = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50];
   const notifications = g => {
@@ -78,19 +93,138 @@
       + `<button type="button" class="btn def" data-k="connect" data-action="connect"${t.busy ? ' aria-disabled="true"' : ''}>Connect</button></div></section>`;
   }
 
+  // ---- Stats pane (T-015) ----
+  // Rust sends every string formatted (spec › Stats state). The pane keeps one height on every day: the table box is
+  // 5½ rows tall and scrolls inside, the footer keeps two lines, so ← / → never resize the window.
+  const DAYW = 494; // strip width: window 560 − body 40 − group border 2 − row padding 24
+  function strip(st) {
+    const x = m => (m / 1440 * DAYW).toFixed(1), z = st.strip || {}, from = z.from || 0, to = z.to == null ? 1440 : z.to;
+    // Hours with no history (before the station's first minute, after now) are a dashed outline; known hours are the track.
+    let g = from > 0 ? `<rect class="track-rest" x=".5" y=".5" width="${from / 1440 * DAYW - 1}" height="7" rx="3.5"/>` : '';
+    if (to < 1440) g += `<rect class="track-rest" x="${+x(to) + .5}" y=".5" width="${(1440 - to) / 1440 * DAYW - 1}" height="7" rx="3.5"/>`;
+    // D-O1: a gap (more than 5 min with no readings) splits the track and is dashed like the other unknown hours.
+    let at = from;
+    [...(z.gaps || []), [to, to - 1]].forEach(([a, e]) => {
+      if (a > at) g += `<rect class="track" x="${x(at)}" y="0" width="${((a - at) / 1440 * DAYW).toFixed(1)}" height="8" rx="4"/>`;
+      if (e >= a) { const w = (e - a + 1) / 1440 * DAYW; g += `<rect class="track-rest" x="${+x(a) + .5}" y=".5" width="${(w - 1).toFixed(1)}" height="7" rx="3.5"/>`; }
+      at = e + 1;
+    });
+    // Each cut has an invisible hit area 24 pt tall and at least 12 pt wide, so a 5-minute cut is easy to point at.
+    let hits = '';
+    (z.cuts || []).forEach(([a, b], i) => {
+      const w = Math.max(3, (b - a + 1) / 1440 * DAYW), cx = Math.min(+x(a), DAYW - w), hw = Math.max(12, w);
+      g += `<rect class="cut" data-i="${i}" x="${cx}" y="0" width="${w.toFixed(1)}" height="8" rx="${Math.min(4, w / 2)}"/>`;
+      hits += `<rect class="hit" data-i="${i}" x="${(cx + w / 2 - hw / 2).toFixed(1)}" y="-8" width="${hw.toFixed(1)}" height="24"/>`;
+    });
+    g += hits;
+    if (z.to != null) g += `<line class="now" x1="${x(to)}" x2="${x(to)}" y1="-3" y2="11"/>`;
+    const ax = [[0, 'start', '12 AM'], [360, 'middle', '6 AM'], [720, 'middle', '12 PM'], [1080, 'middle', '6 PM'], [1440, 'end', '12 AM']];
+    g += ax.map(([m, a, t]) => `<text x="${x(m)}" y="24" text-anchor="${a}">${t.replace(' ', ' ')}</text>`).join('');
+    // With cuts, the strip is one focusable read-out (as the panel chart): ← → move from cut to cut and show its tooltip.
+    const n = (z.cuts || []).length;
+    return `<div class="st-plot"${n ? ` tabindex="0" role="group" aria-label="Power cuts on the day strip. Use left and right arrows to read each cut."` : ''}>`
+      + `<svg class="strip" viewBox="0 -4 ${DAYW} 32" width="${DAYW}" height="32" aria-hidden="true">${g}</svg>${n ? '<div class="st-tip" role="status" hidden></div>' : ''}</div>`;
+  }
+  // A cell that isn't a clock time (Before midnight, After midnight, No readings) is muted: unknown, not measured.
+  const cell = (day, t, unknown) => unknown ? `<span><em>${esc(t)}</em></span>` : day ? `<span><em>${esc(day)}</em> ${esc(t)}</span>` : `<span>${esc(t)}</span>`;
+  function calendar(c) {
+    const head = `<div class="cal-head"><b id="cal-month">${esc(c.month)}</b>`
+      + `<button type="button" class="rm" data-k="cal-prev" data-action="cal-month" data-step="-1" aria-label="Previous month"${c.prev ? '' : ' aria-disabled="true"'}>${LEFT}</button>`
+      + `<button type="button" class="rm" data-k="cal-next" data-action="cal-month" data-step="1" aria-label="Next month"${c.next ? '' : ' aria-disabled="true"'}>${RIGHT}</button></div>`;
+    // D-O7: the week starts on the Mac's first weekday; Rust sends the letters in order and the lead for that start.
+    const wk = (c.letters || ['S', 'M', 'T', 'W', 'T', 'F', 'S']).map(d => `<span class="wd" aria-hidden="true">${d}</span>`).join('');
+    const blank = Array.from({ length: c.lead }, () => '<span></span>').join('');
+    const days = c.days.map((k, i) => {
+      const d = i + 1, cls = ['day', k === 'cut' ? 'has-cut' : '', d === c.today ? 'is-today' : '', d === c.selected ? 'is-sel' : ''].join(' ').trim();
+      const lab = `${d} ${c.month}${k === 'cut' ? ', power cut' : k === 'clear' ? ', no cuts' : k === 'none' ? ', no data' : ''}`;
+      return `<button type="button" class="${cls}" data-k="cal-${d}" data-action="cal-day" data-day="${d}" aria-label="${esc(lab)}"${d === c.selected ? ' aria-current="date"' : ''}${k === 'none' ? ' aria-disabled="true"' : ''} tabindex="${d === (c.focus || c.selected) ? 0 : -1}">${d}</button>`;
+    }).join('');
+    return `<div class="cal" role="dialog" aria-labelledby="cal-month">${head}<div class="cal-grid" role="group" aria-label="${esc(c.month)}">${wk}${blank}${days}</div>`
+      + `<p class="cal-key"><i aria-hidden="true"></i>Days with a power cut</p></div>`;
+  }
+  function stats(st) {
+    if (st.status === 'nobattery') st = { ...st, prev: false, next: false, isToday: true, calendar: null, rows: [], summary: '\u00a0', strip: { from: 1440 } };
+    const off = st.status === 'nobattery' ? ' aria-disabled="true"' : '';
+    const head = `<div class="st-head">`
+      + `<button type="button" class="btn st-date" data-k="calendar" data-action="calendar" aria-haspopup="dialog" aria-expanded="${!!st.calendar}"${off}>${CAL}<span>${esc(st.date)}</span>${DOWN}</button>`
+      + `<div class="seg" role="group" aria-label="Day">`
+      + `<button type="button" data-k="day-prev" data-action="day" data-step="-1" aria-label="Previous day" title="${esc(st.prevTip || 'Previous day (←)')}"${st.prev ? '' : ' aria-disabled="true"'}>${LEFT}</button>`
+      + `<button type="button" data-k="day-today" data-action="today" title="Today (⌘T)"${st.isToday ? ' aria-disabled="true"' : ''}>Today</button>`
+      + `<button type="button" data-k="day-next" data-action="day" data-step="1" aria-label="Next day" title="Next day (→)"${st.next ? '' : ' aria-disabled="true"'}>${RIGHT}</button></div>`
+      + (st.calendar ? calendar(st.calendar) : '') + `</div>`;
+    const rows = st.rows || [];
+    const box = st.status === 'nobattery' ? `<div class="st-msg"><p>${esc(st.msg)}</p></div>`
+      : st.status === 'loading' ? `<div class="st-msg" role="status"><span class="spin" aria-hidden="true"></span>${esc(st.msg)}</div>`
+      : st.status === 'unsaved' ? `<div class="st-msg" role="status"><p>${esc(st.msg)}</p>${btn(...(st.retry || ['retry', 'Try Again']))}</div>`
+      : !rows.length ? `<div class="st-msg"><p>${esc(st.msg || 'The grid was on all day.')}</p></div>`
+      : `<div class="st-rows">` + rows.map((r, i) => `<div class="st-tr${r.running ? ' is-running' : ''}" role="row" data-i="${i}">`
+          + `<span role="cell">${cell(r.offDay, r.off, r.offUnknown)}</span><span role="cell">${r.running ? '<b>Still off</b>' : cell(r.onDay, r.on, r.onUnknown)}</span><span role="cell">${esc(r.dur)}</span></div>`).join('') + `</div>`;
+    const table = `<div class="st-table" role="table" aria-label="Power cuts, ${esc(st.date)}">`
+      + (rows.length ? `<div class="st-tr st-th" role="row"><span role="columnheader">Grid off</span><span role="columnheader">Grid on</span><span role="columnheader">Duration</span></div>` : '')
+      + box + `</div>`;
+    const sum = `<div class="st-sum"><p>${esc(st.summary)}</p>${strip(st)}</div>`;
+    // Footer: the note (where the numbers come from, or why this day is special), then one status line.
+    const b = st.backfill, pr = st.problem;
+    const status = pr ? `<p class="st-line is-warn" role="status">${WARN}<span>${esc(pr.text)}</span>${pr.action ? btn(pr.action[0], pr.action[1]) : ''}</p>`
+      : b && b.paused ? `<p class="st-line" role="status"><span>${esc(b.paused)}</span></p>`
+      : b ? `<p class="st-line" role="status"><span>Loading history: ${b.done} of ${b.total} days</span><span class="bar" role="progressbar" aria-label="Loading history" aria-valuemin="0" aria-valuemax="${b.total}" aria-valuenow="${b.done}"><i style="width:${(b.done / b.total * 100).toFixed(1)}%"></i></span></p>` : '';
+    return head + `<section class="grp st">${sum}${table}</section><div class="st-foot">${st.note ? `<p class="foot">${esc(st.note)}</p>` : ''}${status}</div>`;
+  }
+
   function renderSettings(s) {
-    const pane = s.pane === 'automation' ? 'automation' : 'general', title = PANES.find(p => p[0] === pane)[1];
+    const pane = PANES.some(p => p[0] === s.pane) ? s.pane : 'general', title = PANES.find(p => p[0] === pane)[1];
     // D-Y8: roving tabindex (only the selected tab is in the Tab order); ← → select and show the next pane at once.
     const tabs = PANES.map(([id, label, icon]) => `<button type="button" role="tab" class="tab" data-k="tab-${id}" data-action="pane" data-pane="${id}" aria-selected="${id === pane}" tabindex="${id === pane ? 0 : -1}" id="tab-${id}" aria-controls="pane">${icon}<span>${label}</span></button>`).join('');
     const body = pane === 'general'
-      ? account(s.account) + startup(s.general) + notifications(s.general) + troubleshooting()
+      ? startup(s.general) + menuBar(s.general) + notifications(s.general) + troubleshooting() + account(s.account)
+      : pane === 'stats' ? stats(s.stats)
       : automation(s.automation) + (s.tuya.connected || s.devices.length ? devices(s) : '') + tuya(s.tuya);
     // D-O11: the title strip is empty (the native title bar draws the traffic lights and the title). D-O10: the strip and
     // the toolbar's gaps drag the window (data-drag, see below); the tab buttons don't carry it, so they stay clickable.
     return `<div class="win" role="dialog" aria-label="${title}"><div class="chrome"><div class="titlebar" data-drag></div>`
       + `<div class="toolbar" role="tablist" aria-label="Settings" data-drag>${tabs}</div></div><div class="body" id="pane" role="tabpanel" aria-labelledby="tab-${pane}">${body}</div></div>`;
   }
-  root.GWS = { renderSettings };
+  // ---- Strip read-out (T-015, owner): point at a cut (or its table row), or Tab to the strip and use ← →. The tooltip is the
+  // panel chart's card: the time range on top, then a red swatch, Grid off and the length. The cut's row lights up and the
+  // other cuts fade back. strip.cuts[i] is the day part of rows[i] (Rust sends them in the same order).
+  function bindStrip(rootEl, st) {
+    const plot = rootEl.querySelector('.st-plot[tabindex]'); if (!plot || !st || !st.rows) return;
+    const tip = plot.querySelector('.st-tip'), svg = plot.querySelector('svg');
+    let kb = -1;
+    function show(i) {
+      const r = st.rows[i], cut = svg.querySelector(`.cut[data-i="${i}"]`); if (!r || !cut) return;
+      const from = r.offDay ? `${r.offDay} ${r.off}` : r.off, to = r.running ? 'now' : r.onDay ? `${r.onDay} ${r.on}` : r.on;
+      tip.innerHTML = `<p class="st-tip-time">${esc(from)} – ${esc(to)}</p><p class="st-tip-row"><i></i><span>${r.running ? 'Still off' : 'Grid off'}</span><b>${esc(r.dur)}</b></p>`;
+      tip.hidden = false;
+      // Centred above the cut, kept inside the group (it may reach 12 pt into the row padding on either side).
+      const k = plot.clientWidth / DAYW, c = (+cut.getAttribute('x') + +cut.getAttribute('width') / 2) * k, w = tip.offsetWidth;
+      tip.style.left = Math.max(-12, Math.min(plot.clientWidth + 12 - w, c - w / 2)) + 'px';
+      plot.classList.add('is-reading');
+      svg.querySelectorAll('.cut').forEach(e => e.classList.toggle('is-on', e.dataset.i === String(i)));
+      rootEl.querySelectorAll('.st-rows .st-tr').forEach(e => e.classList.toggle('is-on', e.dataset.i === String(i)));
+      const row = rootEl.querySelector(`.st-rows .st-tr[data-i="${i}"]`);
+      if (row) { const box = row.parentElement; if (row.offsetTop < box.scrollTop || row.offsetTop + row.offsetHeight > box.scrollTop + box.clientHeight) box.scrollTop = row.offsetTop - 8; }
+    }
+    function hide() {
+      if (plot.matches(':focus-visible') && kb >= 0) return show(kb);
+      tip.hidden = true; plot.classList.remove('is-reading');
+      rootEl.querySelectorAll('.st .is-on').forEach(e => e.classList.remove('is-on'));
+    }
+    plot.addEventListener('pointerover', e => { const h = e.target.closest('.hit'); if (h) show(+h.dataset.i); });
+    plot.addEventListener('pointerleave', hide);
+    plot.addEventListener('pointerdown', e => e.preventDefault()); // a click never focuses the strip; only Tab does
+    rootEl.querySelectorAll('.st-rows .st-tr').forEach(row => { row.addEventListener('pointerenter', () => show(+row.dataset.i)); row.addEventListener('pointerleave', hide); });
+    plot.addEventListener('focus', () => { kb = 0; show(0); });
+    plot.addEventListener('blur', () => { kb = -1; hide(); });
+    plot.addEventListener('keydown', e => {
+      const n = st.rows.length, to = { ArrowLeft: kb - 1, ArrowRight: kb + 1, Home: 0, End: n - 1 }[e.key];
+      if (to == null) return;
+      e.preventDefault(); e.stopPropagation(); // ← → read cuts here instead of changing the day
+      kb = Math.max(0, Math.min(n - 1, to)); show(kb);
+    });
+  }
+  root.GWS = { renderSettings, bindStrip };
+
   if (!root.__TAURI__) return; // loaded for a render check, not in the app
 
   // ---- The live window ----
@@ -100,6 +234,7 @@
   // A control that is gone after the action: where focus goes next (Sign Out → Sign In…, Connect → Add Device…).
   const FOCUS_NEXT = { signout: 'signin', signin: 'signout', connect: 'add', aid: 'add', sec: 'add', dc: 'add', disconnect: 'aid' };
   let state = null, last = '', height = 0, hold = 0, queued = null, focusTo = null;
+  const DAY0 = '\u0000day'; // T-015: focus the calendar's roving day (calendar.focus, else the selected day) after the render
 
   const natural = () => { const c = el.querySelector('.chrome'), b = el.querySelector('.body'); return c && b ? c.offsetHeight + b.scrollHeight : 0; };
   function render(s, open) {
@@ -122,10 +257,11 @@
     el.querySelector('.body').scrollTop = scroll;
     if (open) { if (document.activeElement) document.activeElement.blur(); }
     else if (key) {
-      const t = el.querySelector(`[data-k="${key}"]`) || el.querySelector(`[data-k="${FOCUS_NEXT[key]}"]`);
+      const t = key === DAY0 ? el.querySelector('.cal .day[tabindex="0"]') : el.querySelector(`[data-k="${key}"]`) || el.querySelector(`[data-k="${FOCUS_NEXT[key]}"]`);
       if (t && !t.disabled) t.focus();
       if (caret && t && t.dataset.k === key && t.tagName === 'INPUT') t.setSelectionRange(caret[0], caret[1]);
     }
+    if (s.pane === 'stats') bindStrip(el, s.stats);
     const h = natural();
     if (open || h !== height) { height = h; invoke('settings_show', { h, show: !!open }); }
   }
@@ -156,7 +292,11 @@
     if (id === 'howto') e.preventDefault();
     if (id === 'pane') return pane(b.dataset.pane);
     if (id === 'connect') return connect();
-    if (id === 'enable' || id === 'login') {
+    // T-015 Stats: the day and calendar actions carry their step or day; Rust answers with the new state.
+    if (id === 'day' || id === 'cal-month') return act({ id: id.replace('-', '_'), step: +b.dataset.step });
+    if (id === 'cal-day') { focusTo = 'calendar'; return act({ id: 'cal_day', day: +b.dataset.day }); }
+    if (id === 'calendar') focusTo = state.stats.calendar ? 'calendar' : DAY0; // closing: back to the button; opening: the selected day
+    if (id === 'enable' || id === 'login' || id === 'temps') {
       const on = b.getAttribute('aria-checked') !== 'true';
       b.setAttribute('aria-checked', String(on)); // the knob slides now; the state confirms it
       clearTimeout(hold);
@@ -176,8 +316,32 @@
     if (t.dataset.delay != null) return act({ id: 'delay', device: +t.dataset.device, delay_s: +t.value });
   });
 
+  // T-015: a click outside the open calendar closes it (the date button toggles it itself).
+  document.addEventListener('mousedown', e => {
+    if (state && state.pane === 'stats' && state.stats.calendar && !e.target.closest('.cal, [data-k="calendar"]')) { focusTo = 'calendar'; act({ id: 'calendar' }); }
+  });
+  // T-015 Stats keys. Calendar open: ← → ↑ ↓ move focus a day / a week (into the next month through Rust), Return / Space
+  // pick (native button click), Esc closes it. Calendar closed: ← → step a day unless a toolbar item has focus, ⌘T = today.
+  function statsKey(e) {
+    const st = state.stats, t = e.target, k = e.key;
+    if (st.calendar) {
+      if (k === 'Escape') { focusTo = 'calendar'; act({ id: 'calendar' }); return true; }
+      const mv = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[k];
+      if (!mv || !t.classList.contains('day')) return false;
+      const d = +t.dataset.day + mv, n = st.calendar.days.length;
+      if (d < 1 || d > n) { focusTo = DAY0; act({ id: 'cal_month', step: Math.sign(mv), focus: mv < 0 ? d : d - n }); return true; } // focus: day in that month, ≤ 0 = from its end
+      const b = el.querySelector(`[data-k="cal-${d}"]`); if (b) b.focus();
+      return true;
+    }
+    if (st.status === 'nobattery') return false;
+    if ((k === 'ArrowLeft' || k === 'ArrowRight') && t.getAttribute('role') !== 'tab' && t.tagName !== 'SELECT' && !t.classList.contains('st-plot')) { act({ id: 'day', step: k === 'ArrowRight' ? 1 : -1 }); return true; }
+    if (e.metaKey && k.toLowerCase() === 't') { act({ id: 'today' }); return true; }
+    return false;
+  }
+
   document.addEventListener('keydown', e => {
     const k = e.key.toLowerCase();
+    if (state && state.pane === 'stats' && !(e.metaKey && k === 'w') && statsKey(e)) return e.preventDefault();
     if (e.key === 'Escape' || (e.metaKey && k === 'w')) { e.preventDefault(); return act({ id: 'close' }); }
     if (e.key === 'Enter' && (e.target.id === 'aid' || e.target.id === 'sec')) { e.preventDefault(); return connect(); }
     if (e.target.getAttribute && e.target.getAttribute('role') === 'tab' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
