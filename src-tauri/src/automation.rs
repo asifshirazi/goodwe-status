@@ -46,6 +46,8 @@ pub struct Store {
     pub low_battery_pct: Option<u8>,
     /// Settings › General › Show temperatures (unset: on, T-015).
     pub show_temps: Option<bool>,
+    /// Settings › General › Show today's power cuts (unset: on, T-020).
+    pub show_cuts: Option<bool>,
 }
 
 impl Store {
@@ -432,6 +434,14 @@ impl Automation {
     pub fn set_show_temps(&self, on: bool) {
         let mut st = self.st.lock().unwrap();
         st.store.show_temps = Some(on);
+        self.save(&st);
+    }
+    pub fn show_cuts(&self) -> bool {
+        self.st.lock().unwrap().store.show_cuts.unwrap_or(true)
+    }
+    pub fn set_show_cuts(&self, on: bool) {
+        let mut st = self.st.lock().unwrap();
+        st.store.show_cuts = Some(on);
         self.save(&st);
     }
     /// Saves the setting, kept in range; returns the value saved.

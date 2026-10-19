@@ -108,6 +108,10 @@ pub struct General {
     pub show_temps: bool,
     /// What the inverter sends, for the switch's helper: 'both' | 'inverter' | 'none'.
     pub temps: &'static str,
+    /// Show today's power cuts (T-020 § 2).
+    pub show_cuts: bool,
+    /// False once a reading shows no battery: no cut history, so the switch is dimmed.
+    pub has_battery: bool,
 }
 
 /// The helper's case from the last reading; before the first one, 'both' (T-015 § 2).
@@ -126,10 +130,10 @@ pub fn account(m: &Monitor) -> Account {
 fn state(app: &AppHandle) -> Option<State> {
     let auto = app.try_state::<Arc<Automation>>()?;
     // The Monitor lock is let go before `view`, whose grid hook takes it again.
-    let (account, temps, stats) = {
+    let (account, temps, stats, has_battery) = {
         let m = app.state::<Arc<Mutex<Monitor>>>();
         let m = m.lock().unwrap();
-        (account(&m), temps_sent(&m), stats::view(&m, std::time::Instant::now()))
+        (account(&m), temps_sent(&m), stats::view(&m, std::time::Instant::now()), m.last.as_ref().is_none_or(|r| r.battery.is_some()))
     };
     let view = auto.view(account.signed_in);
     Some(State {
@@ -140,6 +144,8 @@ fn state(app: &AppHandle) -> Option<State> {
             low_battery: auto.low_battery_pct(),
             show_temps: auto.show_temps(),
             temps,
+            show_cuts: auto.show_cuts(),
+            has_battery,
         },
         stats,
         auto: view,
@@ -166,6 +172,12 @@ fn show_pane(app: &AppHandle, pane: &str) {
     if pane == "automation" {
         app.state::<Arc<Automation>>().refresh_devices();
     }
+}
+
+/// The panel's ⓘ (T-020 § 1): Settings on Stats, today, calendar shut; in place when it is open.
+pub fn open_stats(app: &AppHandle) {
+    app.state::<Arc<Automation>>().set_pane("stats");
+    open(app);
 }
 
 /// Settings… in the panel, ⌘,: opens it on the last pane, or focuses it when it is open.
@@ -262,6 +274,11 @@ pub async fn settings_action(app: AppHandle, a: Value) -> Result<(), String> {
         "temps" => {
             auto.set_show_temps(on);
             app.state::<Arc<Mutex<Monitor>>>().lock().unwrap().show_temps = on;
+            shell::refresh(&app);
+        }
+        "cuts" => {
+            auto.set_show_cuts(on);
+            app.state::<Arc<Mutex<Monitor>>>().lock().unwrap().show_cuts = on;
             shell::refresh(&app);
         }
         "low_battery" => {
@@ -446,14 +463,15 @@ mod tests {
         let s = State {
             pane: "general",
             account: account(&Monitor::new(false)),
-            general: General { open_at_login: true, low_battery: 20, show_temps: true, temps: "both" },
+            general: General { open_at_login: true, low_battery: 20, show_temps: true, temps: "both", show_cuts: true, has_battery: true },
             stats: stats::view(&Monitor::new(false), std::time::Instant::now()),
             auto: auto.view(false),
         };
+        assert!(auto.show_cuts(), "T-020: on by default, also for a saved file without it");
         let v = serde_json::to_value(s).unwrap();
         for k in ["pane", "account", "general", "stats", "automation", "tuya", "devices", "add"] {
             assert!(v.get(k).is_some(), "missing {k}: {v}");
         }
-        assert_eq!(v["general"], serde_json::json!({ "openAtLogin": true, "lowBattery": 20, "showTemps": true, "temps": "both" }));
+        assert_eq!(v["general"], serde_json::json!({ "openAtLogin": true, "lowBattery": 20, "showTemps": true, "temps": "both", "showCuts": true, "hasBattery": true }));
     }
 }

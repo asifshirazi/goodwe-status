@@ -57,7 +57,7 @@ pub struct Calendar {
 }
 
 /// Minutes of the day. `from`: the first known minute (1440 = nothing known); `to`: now, today only.
-#[derive(Debug, Default, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct Strip {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from: Option<u32>,
@@ -69,7 +69,7 @@ pub struct Strip {
     pub gaps: Vec<(u32, u32)>,
 }
 
-#[derive(Debug, Default, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Row {
     pub off: String,
@@ -144,8 +144,30 @@ fn first_day(m: &Monitor, today: i64) -> i64 {
     m.first_day().or(m.history.keys().next().copied()).unwrap_or(today).min(today)
 }
 
+/// The panel's strip (T-020 § 3): today's Stats view, whatever day Settings shows, without the
+/// date, calendar and footer. `None` without cut history: signed out or no battery.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Cuts {
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub msg: Option<String>,
+    pub summary: String,
+    pub strip: Strip,
+    pub rows: Vec<Row>,
+}
+
+pub fn today(m: &Monitor, now: Instant) -> Option<Cuts> {
+    let v = day_view(m, now, true);
+    (v.status != "nobattery" && m.signed_in).then_some(Cuts { status: v.status, msg: v.msg, summary: v.summary, strip: v.strip, rows: v.rows })
+}
+
 /// The Stats state for the day it shows (`Monitor::stats_day`, else today).
 pub fn view(m: &Monitor, now: Instant) -> StatsView {
+    day_view(m, now, false)
+}
+
+/// `today_only`: the panel's view, today and no calendar.
+fn day_view(m: &Monitor, now: Instant, today_only: bool) -> StatsView {
     let blank = |date: String, status, msg: String| StatsView {
         date,
         is_today: true,
@@ -179,7 +201,7 @@ pub fn view(m: &Monitor, now: Instant) -> StatsView {
     }
     let today = at.day();
     let first = first_day(m, today);
-    let d = m.stats_day.unwrap_or(today).clamp(first, today);
+    let d = if today_only { today } else { m.stats_day.unwrap_or(today).clamp(first, today) };
     let offline = m.failures >= rules::STALE_FAILURES;
     let prev = step_day(m, d, -1, today).is_some();
     let base = StatsView {
@@ -189,7 +211,7 @@ pub fn view(m: &Monitor, now: Instant) -> StatsView {
         next: step_day(m, d, 1, today).is_some(),
         prev_tip: (!prev).then(|| format!("History starts {}", date_of(first).day_month_year())),
         problem: offline.then_some(Problem { text: OFFLINE }),
-        calendar: m.stats_cal.map(|c| calendar(m, c, d, first, today, FIRST_WEEKDAY.load(Ordering::Relaxed))),
+        calendar: m.stats_cal.filter(|_| !today_only).map(|c| calendar(m, c, d, first, today, FIRST_WEEKDAY.load(Ordering::Relaxed))),
         backfill: match (m.walk.paused_until, m.walk.total) {
             (_, 0) => None,
             (Some(t), total) => Some(Backfill::Paused {
@@ -462,6 +484,32 @@ mod tests {
         m.failures = 3;
         let v = serde_json::to_value(view(&m, Instant::now())).unwrap();
         assert_eq!((v["note"].as_str(), v["problem"]["text"].as_str()), (Some("Today as of 2:14\u{a0}PM."), Some(OFFLINE)));
+    }
+
+    #[test]
+    fn panel_strip_is_today_whatever_stats_shows() {
+        // T-020: the panel's strip follows today, never the day or calendar picked in Stats.
+        let mut m = station(vec![("2026-10-18", grid(&[(600, 700)], 1439, vec![])), ("2026-10-19", grid(&[(72, 124), (778, 852)], 852, vec![]))]);
+        m.stats_day = Some(day("2026-10-18"));
+        m.stats_cal = Some((day("2026-10-01"), None));
+        let c = serde_json::to_value(today(&m, Instant::now())).unwrap();
+        assert_eq!(c["summary"], "So far today: 2 power cuts, off for 2h 9m.");
+        assert_eq!(c["strip"], json!({ "to": 854, "cuts": [[72, 124], [778, 854]] }));
+        assert_eq!(c["rows"][1]["running"], true);
+        for k in ["date", "calendar", "note", "backfill", "msg"] {
+            assert!(c.get(k).is_none(), "{k}: {c}");
+        }
+        assert_eq!(m.stats_day, Some(day("2026-10-18")), "Stats keeps its day");
+        // no cuts yet today; loading today; no battery and signed out send none
+        let mut m = station(vec![("2026-10-19", grid(&[], 852, vec![]))]);
+        assert_eq!(today(&m, Instant::now()).map(|c| c.summary), Some("So far today: no power cuts.".into()));
+        let mut m2 = station(vec![]);
+        let c = today(&m2, Instant::now()).unwrap();
+        assert_eq!((c.status, c.msg.as_deref(), c.strip.from), ("loading", Some("Loading 19 October from SEMS…"), Some(1440)));
+        m2.last.as_mut().unwrap().battery = None;
+        assert_eq!(today(&m2, Instant::now()), None);
+        m.reset(false);
+        assert_eq!(today(&m, Instant::now()), None);
     }
 
     #[test]

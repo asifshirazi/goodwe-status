@@ -16,12 +16,15 @@
     const plot = root.querySelector('.gw-plot[data-plot]');
     const reading = plot && (plot.matches(':hover') || a === plot) && plot.dataset.at != null
       ? { at: +plot.dataset.at, kb: plot.dataset.kb, focus: a === plot } : null;
+    const strip = a && a.classList.contains('gw-strip-plot') ? a.dataset.kb : null; // T-020: keyboard on a cut
     root.innerHTML = GW.renderPanel(s);
     GW.bindChart(root);
     if (focused) {
       const b = root.querySelector(`[data-action="${focused}"]`);
       if (b) b.focus();
     }
+    const ns = strip != null && root.querySelector('.gw-strip-plot[tabindex]');
+    if (ns) { ns.dataset.kb = strip; ns.focus({ preventScroll: true }); }
     const np = root.querySelector('.gw-plot[data-plot]');
     if (reading && np) {
       if (reading.focus) { np.focus({ preventScroll: true }); if (reading.kb != null) np.dataset.kb = reading.kb; }

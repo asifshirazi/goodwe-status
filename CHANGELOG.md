@@ -4,6 +4,10 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ## [Unreleased]
 
+### Added
+- Today's power cuts as a 24-hour strip at the bottom of the panel's Grid section (the same strip as in Stats; point at a cut, or Tab, then ← →, to read it). Turn it off in Settings › General › Show today's power cuts.
+- An ⓘ at the end of "Usually back around …" opens Settings › Stats on today.
+
 ### Changed
 - "Usually back around" and "Next cut" now look at the last 14 days instead of 5, so they show up more often, also after a few unusual days.
 

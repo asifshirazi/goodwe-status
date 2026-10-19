@@ -93,6 +93,7 @@ pub fn run() {
                 let mut m = mon.lock().unwrap();
                 m.low_pct = auto.low_battery_pct();
                 m.show_temps = auto.show_temps();
+                m.show_cuts = auto.show_cuts();
                 // Finished past days from the last run: the predictions don't wait for 5 fresh fetches.
                 if let Ok(d) = app.path().app_data_dir() {
                     if m.load_history(d.join("history.json")) {

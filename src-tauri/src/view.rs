@@ -21,6 +21,8 @@ pub struct PanelState {
     pub refreshing: bool,
     /// T-015 § 1: `null` when the switch is off or neither reading is real.
     pub temps: Option<TempsView>,
+    /// T-020 § 3: today's cut strip; `null` when the switch is off, signed out or no battery.
+    pub cuts: Option<crate::stats::Cuts>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -203,6 +205,7 @@ pub fn panel(m: &Monitor, now: Instant, notifications_off: bool) -> PanelState {
         signed_in: m.signed_in,
         refreshing,
         temps: shown.filter(|_| m.show_temps).and_then(|r| temps(m, r, stale)),
+        cuts: if m.show_cuts { crate::stats::today(m, now) } else { None },
     }
 }
 
@@ -686,9 +689,13 @@ mod tests {
         let mut m = Monitor::new(true);
         m.on_reading(reading("10/18/2026 08:20:00", GridSignal::On, Some((91.0, 0.0))), Instant::now());
         let v = serde_json::to_value(panel(&m, Instant::now(), true)).unwrap();
-        for k in ["status", "battery", "updated", "notificationsOff", "chart", "signedIn", "refreshing"] {
+        for k in ["status", "battery", "updated", "notificationsOff", "chart", "signedIn", "refreshing", "cuts"] {
             assert!(v.get(k).is_some(), "missing {k}");
         }
+        // T-020: today's strip while the switch is on (loading here: no history yet); off sends null.
+        assert_eq!(v["cuts"]["status"], "loading");
+        m.show_cuts = false;
+        assert_eq!(panel(&m, Instant::now(), true).cuts, None);
         assert!(v.get("account").is_none(), "the account is in Settings, never the panel");
         assert_eq!(v["chart"]["day"], "18 Oct");
         assert_eq!(v["status"], serde_json::json!({ "kind": "on", "title": "Grid on" }), "back and next only when set");

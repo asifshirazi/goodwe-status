@@ -8,11 +8,12 @@ A macOS menu bar app that shows your home battery level and whether the grid is 
 
 - **Grid off since** comes from the inverter's minute history, so it is right after a restart too.
 - **Usually back around 12:05 PM (last 14 days)** while the grid is off, and **Next cut usually around 1:35 PM · back around 4:30 PM** while it is on. Both are estimates from the last 14 days, shown only when 3 of those days agree; never a promise.
+- **Today's power cuts:** a 24-hour strip under Grid shows today's cuts in red (point at one, or Tab, then ← →, to read it). Hide it in **Settings… › General › Show today's power cuts**. The ⓘ after "Usually back around" opens **Stats** on today.
 - **Low battery alert:** while the grid is off, one alert with sound when the battery reaches 20% and one more at 10%. Change the level in **Settings… › General › Low battery alert** (the second alert is always at half of it).
 - **Temperatures:** the inverter's and the battery's, each with a bar on its scale. **Warm**, **Hot** or **Cold** shows next to a reading that isn't fine (inverter warm from 60 °C, hot from 70 °C; battery warm from 40 °C, hot from 50 °C, cold at 0 °C or below), and an arrow when it moved 2 °C or more in 30 minutes. Hide them in **Settings… › General › Show temperatures**.
 - **Chart:** point at it (or Tab, then ← →) to read the time, battery % and kW at that minute.
 - **Refresh:** the ↻ button at the top right, or ⌘R. The panel stays open while it refreshes.
-- **Settings…** (⌘,, at the bottom of the panel) holds Open at login, Show temperatures, the low battery alert, the log folder, your account (Sign Out removes the saved login from your Keychain), the device automation below and Stats. Signed out, the panel also shows **Sign In…**.
+- **Settings…** (⌘,, at the bottom of the panel) holds Open at login, Show temperatures, Show today's power cuts, the low battery alert, the log folder, your account (Sign Out removes the saved login from your Keychain), the device automation below and Stats. Signed out, the panel also shows **Sign In…**.
 - **Stats:** **Settings… › Stats** lists one day's power cuts: when the grid went off, when it came back and for how long, with a strip of the day above. ← / → (or ‹ ›) step a day, ⌘T goes to today, and the date button opens a calendar (a dot marks days with a cut).
 - **Device automation:** Tuya / Smart Life devices can change by themselves when the grid goes off or comes back, each after its own delay. See [Device automation (Tuya)](#device-automation-tuya).
 

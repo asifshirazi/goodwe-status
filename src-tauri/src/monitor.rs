@@ -205,6 +205,8 @@ pub struct Monitor {
     low_alert: Option<f64>,
     /// Settings › General › Show temperatures (T-015, default on).
     pub show_temps: bool,
+    /// Settings › General › Show today's power cuts (T-020, default on).
+    pub show_cuts: bool,
     /// (time, inverter °C, battery °C) per new reading, back to the newest one 30 min old: the trend.
     pub(crate) temps: Vec<(LocalTs, Option<f64>, Option<f64>)>,
 }
@@ -244,6 +246,7 @@ impl Monitor {
             low_fired: Vec::new(),
             low_alert: None,
             show_temps: true,
+            show_cuts: true,
             temps: Vec::new(),
         }
     }
@@ -261,6 +264,7 @@ impl Monitor {
             history_file: self.history_file.take(),
             low_pct: self.low_pct,
             show_temps: self.show_temps,
+            show_cuts: self.show_cuts,
             ..Monitor::new(signed_in)
         };
     }

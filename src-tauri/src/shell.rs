@@ -240,6 +240,7 @@ pub fn panel_action(app: AppHandle, id: String) {
         }
         "quit" => app.exit(0),
         "settings" => crate::settings::open(&app),
+        "stats" => crate::settings::open_stats(&app),
         "notif" => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {

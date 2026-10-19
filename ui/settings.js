@@ -38,7 +38,10 @@
   const menuBar = g => {
     const help = { inverter: 'This inverter doesn’t send a battery temperature, so the panel shows the inverter’s only.',
       none: 'This inverter doesn’t send its temperatures.' }[g.temps] || 'Show the inverter and battery temperature in the panel.';
-    return `<h2>Menu Bar</h2><section class="grp"><div class="row"><div class="lbl"><span>Show temperatures</span><small>${help}</small></div>${sw('temps', g.showTemps && g.temps !== 'none', 'Show temperatures', g.temps === 'none')}</div></section>`;
+    // T-020: today's cut strip in the panel (on by default). No battery = no cut history, so it is dimmed and says why.
+    const noBat = g.hasBattery === false;
+    const cuts = `<div class="row"><div class="lbl"><span>Show today’s power cuts</span><small>${noBat ? 'Power cuts are worked out from the battery’s readings, and this station has no battery.' : 'Show a 24-hour strip of today’s cuts under Grid in the panel.'}</small></div>${sw('cuts', !!g.showCuts && !noBat, 'Show today’s power cuts', noBat)}</div>`;
+    return `<h2>Menu Bar</h2><section class="grp"><div class="row"><div class="lbl"><span>Show temperatures</span><small>${help}</small></div>${sw('temps', g.showTemps && g.temps !== 'none', 'Show temperatures', g.temps === 'none')}</div>${cuts}</section>`;
   };
   // T-008: one alert at the setting and one at half of it (Rust: rules::low_battery, integer half), only while the grid is off.
   const LOW = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50];
@@ -98,32 +101,10 @@
   // 5½ rows tall and scrolls inside, the footer keeps two lines, so ← / → never resize the window.
   const DAYW = 494; // strip width: window 560 − body 40 − group border 2 − row padding 24
   function strip(st) {
-    const x = m => (m / 1440 * DAYW).toFixed(1), z = st.strip || {}, from = z.from || 0, to = z.to == null ? 1440 : z.to;
-    // Hours with no history (before the station's first minute, after now) are a dashed outline; known hours are the track.
-    let g = from > 0 ? `<rect class="track-rest" x=".5" y=".5" width="${from / 1440 * DAYW - 1}" height="7" rx="3.5"/>` : '';
-    if (to < 1440) g += `<rect class="track-rest" x="${+x(to) + .5}" y=".5" width="${(1440 - to) / 1440 * DAYW - 1}" height="7" rx="3.5"/>`;
-    // D-O1: a gap (more than 5 min with no readings) splits the track and is dashed like the other unknown hours.
-    let at = from;
-    [...(z.gaps || []), [to, to - 1]].forEach(([a, e]) => {
-      if (a > at) g += `<rect class="track" x="${x(at)}" y="0" width="${((a - at) / 1440 * DAYW).toFixed(1)}" height="8" rx="4"/>`;
-      if (e >= a) { const w = (e - a + 1) / 1440 * DAYW; g += `<rect class="track-rest" x="${+x(a) + .5}" y=".5" width="${(w - 1).toFixed(1)}" height="7" rx="3.5"/>`; }
-      at = e + 1;
-    });
-    // Each cut has an invisible hit area 24 pt tall and at least 12 pt wide, so a 5-minute cut is easy to point at.
-    let hits = '';
-    (z.cuts || []).forEach(([a, b], i) => {
-      const w = Math.max(3, (b - a + 1) / 1440 * DAYW), cx = Math.min(+x(a), DAYW - w), hw = Math.max(12, w);
-      g += `<rect class="cut" data-i="${i}" x="${cx}" y="0" width="${w.toFixed(1)}" height="8" rx="${Math.min(4, w / 2)}"/>`;
-      hits += `<rect class="hit" data-i="${i}" x="${(cx + w / 2 - hw / 2).toFixed(1)}" y="-8" width="${hw.toFixed(1)}" height="24"/>`;
-    });
-    g += hits;
-    if (z.to != null) g += `<line class="now" x1="${x(to)}" x2="${x(to)}" y1="-3" y2="11"/>`;
-    const ax = [[0, 'start', '12 AM'], [360, 'middle', '6 AM'], [720, 'middle', '12 PM'], [1080, 'middle', '6 PM'], [1440, 'end', '12 AM']];
-    g += ax.map(([m, a, t]) => `<text x="${x(m)}" y="24" text-anchor="${a}">${t.replace(' ', ' ')}</text>`).join('');
     // With cuts, the strip is one focusable read-out (as the panel chart): ← → move from cut to cut and show its tooltip.
-    const n = (z.cuts || []).length;
+    const n = ((st.strip || {}).cuts || []).length;
     return `<div class="st-plot"${n ? ` tabindex="0" role="group" aria-label="Power cuts on the day strip. Use left and right arrows to read each cut."` : ''}>`
-      + `<svg class="strip" viewBox="0 -4 ${DAYW} 32" width="${DAYW}" height="32" aria-hidden="true">${g}</svg>${n ? '<div class="st-tip" role="status" hidden></div>' : ''}</div>`;
+      + `${GWStrip.svg(st.strip, DAYW)}${n ? '<div class="st-tip" role="status" hidden></div>' : ''}</div>`;
   }
   // A cell that isn't a clock time (Before midnight, After midnight, No readings) is muted: unknown, not measured.
   const cell = (day, t, unknown) => unknown ? `<span><em>${esc(t)}</em></span>` : day ? `<span><em>${esc(day)}</em> ${esc(t)}</span>` : `<span>${esc(t)}</span>`;
@@ -188,40 +169,16 @@
   // panel chart's card: the time range on top, then a red swatch, Grid off and the length. The cut's row lights up and the
   // other cuts fade back. strip.cuts[i] is the day part of rows[i] (Rust sends them in the same order).
   function bindStrip(rootEl, st) {
-    const plot = rootEl.querySelector('.st-plot[tabindex]'); if (!plot || !st || !st.rows) return;
-    const tip = plot.querySelector('.st-tip'), svg = plot.querySelector('svg');
-    let kb = -1;
-    function show(i) {
-      const r = st.rows[i], cut = svg.querySelector(`.cut[data-i="${i}"]`); if (!r || !cut) return;
-      const from = r.offDay ? `${r.offDay} ${r.off}` : r.off, to = r.running ? 'now' : r.onDay ? `${r.onDay} ${r.on}` : r.on;
-      tip.innerHTML = `<p class="st-tip-time">${esc(from)} – ${esc(to)}</p><p class="st-tip-row"><i></i><span>${r.running ? 'Still off' : 'Grid off'}</span><b>${esc(r.dur)}</b></p>`;
-      tip.hidden = false;
-      // Centred above the cut, kept inside the group (it may reach 12 pt into the row padding on either side).
-      const k = plot.clientWidth / DAYW, c = (+cut.getAttribute('x') + +cut.getAttribute('width') / 2) * k, w = tip.offsetWidth;
-      tip.style.left = Math.max(-12, Math.min(plot.clientWidth + 12 - w, c - w / 2)) + 'px';
-      plot.classList.add('is-reading');
-      svg.querySelectorAll('.cut').forEach(e => e.classList.toggle('is-on', e.dataset.i === String(i)));
-      rootEl.querySelectorAll('.st-rows .st-tr').forEach(e => e.classList.toggle('is-on', e.dataset.i === String(i)));
-      const row = rootEl.querySelector(`.st-rows .st-tr[data-i="${i}"]`);
-      if (row) { const box = row.parentElement; if (row.offsetTop < box.scrollTop || row.offsetTop + row.offsetHeight > box.scrollTop + box.clientHeight) box.scrollTop = row.offsetTop - 8; }
-    }
-    function hide() {
-      if (plot.matches(':focus-visible') && kb >= 0) return show(kb);
-      tip.hidden = true; plot.classList.remove('is-reading');
-      rootEl.querySelectorAll('.st .is-on').forEach(e => e.classList.remove('is-on'));
-    }
-    plot.addEventListener('pointerover', e => { const h = e.target.closest('.hit'); if (h) show(+h.dataset.i); });
-    plot.addEventListener('pointerleave', hide);
-    plot.addEventListener('pointerdown', e => e.preventDefault()); // a click never focuses the strip; only Tab does
-    rootEl.querySelectorAll('.st-rows .st-tr').forEach(row => { row.addEventListener('pointerenter', () => show(+row.dataset.i)); row.addEventListener('pointerleave', hide); });
-    plot.addEventListener('focus', () => { kb = 0; show(0); });
-    plot.addEventListener('blur', () => { kb = -1; hide(); });
-    plot.addEventListener('keydown', e => {
-      const n = st.rows.length, to = { ArrowLeft: kb - 1, ArrowRight: kb + 1, Home: 0, End: n - 1 }[e.key];
-      if (to == null) return;
-      e.preventDefault(); e.stopPropagation(); // ← → read cuts here instead of changing the day
-      kb = Math.max(0, Math.min(n - 1, to)); show(kb);
-    });
+    if (!st) return;
+    const rows = () => rootEl.querySelectorAll('.st-rows .st-tr');
+    const r = GWStrip.bind(rootEl.querySelector('.st-plot[tabindex]'), st.rows, DAYW, { tip: 'st-tip', left: -12,
+      onShow: i => {
+        rows().forEach(e => e.classList.toggle('is-on', e.dataset.i === String(i)));
+        const row = rootEl.querySelector(`.st-rows .st-tr[data-i="${i}"]`);
+        if (row) { const box = row.parentElement; if (row.offsetTop < box.scrollTop || row.offsetTop + row.offsetHeight > box.scrollTop + box.clientHeight) box.scrollTop = row.offsetTop - 8; }
+      },
+      onHide: () => rows().forEach(e => e.classList.remove('is-on')) });
+    if (r) rows().forEach(row => { row.addEventListener('pointerenter', () => r.show(+row.dataset.i)); row.addEventListener('pointerleave', r.hide); });
   }
   root.GWS = { renderSettings, bindStrip };
 
@@ -296,7 +253,7 @@
     if (id === 'day' || id === 'cal-month') return act({ id: id.replace('-', '_'), step: +b.dataset.step });
     if (id === 'cal-day') { focusTo = 'calendar'; return act({ id: 'cal_day', day: +b.dataset.day }); }
     if (id === 'calendar') focusTo = state.stats.calendar ? 'calendar' : DAY0; // closing: back to the button; opening: the selected day
-    if (id === 'enable' || id === 'login' || id === 'temps') {
+    if (id === 'enable' || id === 'login' || id === 'temps' || id === 'cuts') {
       const on = b.getAttribute('aria-checked') !== 'true';
       b.setAttribute('aria-checked', String(on)); // the knob slides now; the state confirms it
       clearTimeout(hold);
