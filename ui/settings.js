@@ -25,6 +25,13 @@
     return `<h2 class="first">Account</h2><section class="grp"><div class="row">${body}</div></section>`;
   }
   const startup = g => `<h2>Startup</h2><section class="grp"><div class="row"><div class="lbl"><span>Open at login</span><small>Start GoodWe Status in the menu bar when you log in.</small></div>${sw('login', g.openAtLogin, 'Open at login')}</div></section>`;
+  // T-008: one alert at the setting and one at half of it (Rust: rules::low_battery, integer half), only while the grid is off.
+  const LOW = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50];
+  const notifications = g => {
+    const p = g.lowBattery || 20, opts = LOW.includes(p) ? LOW : [...LOW, p].sort((a, b) => a - b);
+    return `<h2>Notifications</h2><section class="grp"><div class="row"><div class="lbl"><label for="low">Low battery alert</label><small>While the grid is off, notify at ${p}% and again at ${Math.floor(p / 2)}%.</small></div>`
+      + `<select id="low" data-k="low">${opts.map(v => `<option value="${v}"${v === p ? ' selected' : ''}>${v}%</option>`).join('')}</select></div></section>`;
+  };
   const troubleshooting = () => `<h2>Troubleshooting</h2><section class="grp"><div class="row"><div class="lbl"><span>Log folder</span><small>The app’s logs, for reporting a problem.</small></div>${btn('logs', 'Open Log Folder')}</div></section>`;
 
   // ---- Automation pane ----
@@ -76,7 +83,7 @@
     // D-Y8: roving tabindex (only the selected tab is in the Tab order); ← → select and show the next pane at once.
     const tabs = PANES.map(([id, label, icon]) => `<button type="button" role="tab" class="tab" data-k="tab-${id}" data-action="pane" data-pane="${id}" aria-selected="${id === pane}" tabindex="${id === pane ? 0 : -1}" id="tab-${id}" aria-controls="pane">${icon}<span>${label}</span></button>`).join('');
     const body = pane === 'general'
-      ? account(s.account) + startup(s.general) + troubleshooting()
+      ? account(s.account) + startup(s.general) + notifications(s.general) + troubleshooting()
       : automation(s.automation) + (s.tuya.connected || s.devices.length ? devices(s) : '') + tuya(s.tuya);
     // D-O11: the title strip is empty (the native title bar draws the traffic lights and the title). D-O10: the strip and
     // the toolbar's gaps drag the window (data-drag, see below); the tab buttons don't carry it, so they stay clickable.
@@ -164,6 +171,7 @@
     const t = e.target;
     if (t.id === 'dc') return t.classList.toggle('is-placeholder', !t.value);
     if (t.id === 'add') return act({ id: 'add', item: t.selectedIndex - 1 });
+    if (t.id === 'low') return act({ id: 'low_battery', pct: +t.value });
     if (t.dataset.which) return act({ id: 'choice', device: +t.dataset.device, which: t.dataset.which, choice: +t.value });
     if (t.dataset.delay != null) return act({ id: 'delay', device: +t.dataset.device, delay_s: +t.value });
   });

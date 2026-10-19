@@ -28,8 +28,8 @@ const WINDOW: i64 = 30;
 /// ...on at least this many days.
 const AGREE_DAYS: usize = 3;
 
-/// One station-local day of history.
-#[derive(Debug, Clone, PartialEq, Default)]
+/// One station-local day of history. Serde: the finished past days are kept on disk (T-012).
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct GridDay {
     /// Minutes of the day that were off, sorted, each with "the house drew load" then.
     pub off: Vec<(u32, bool)>,

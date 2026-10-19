@@ -41,7 +41,18 @@
   // The panel opens with no row highlighted (hand-off): drop any focus left from the last time.
   // The panel only gains focus when it opens (it hides on blur), so this never fights the
   // focus restore above, which serves re-renders while it is open.
-  window.addEventListener('focus', () => { if (document.activeElement) document.activeElement.blur(); });
+  window.addEventListener('focus', () => {
+    if (document.activeElement) document.activeElement.blur();
+    // A hidden window gets no mouse-exit: the row last clicked (Settings…) would keep :hover.
+    // Rows light on hover again after the pointer really moves in the panel (T-013 item 6).
+    root.classList.add('gw-still');
+  });
+  // Only a move to a new spot: WebKit repeats the last position (stale) after a redraw.
+  let px, py;
+  document.addEventListener('pointermove', e => {
+    if (e.clientX !== px || e.clientY !== py) root.classList.remove('gw-still');
+    [px, py] = [e.clientX, e.clientY];
+  });
 
   const enabled = () => [...root.querySelectorAll('.gw-act:not([aria-disabled="true"])')];
   const run = id => {

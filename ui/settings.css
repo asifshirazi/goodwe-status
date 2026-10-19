@@ -3,7 +3,7 @@
 /* D-R3: without this WebKit draws native controls (pop-ups) in their light look in dark mode. Ships. */
 :root{color-scheme:light dark}
 :root{
-  --label:rgba(0,0,0,.85); --label-2:rgba(0,0,0,.55); --label-disabled:rgba(0,0,0,.25); --accent:#007AFF; --on-accent:#FFFFFF;
+  --label:rgba(0,0,0,.85); --label-2:rgba(0,0,0,.55); --label-disabled:rgba(0,0,0,.25); --placeholder:rgba(0,0,0,.55); --accent:#007AFF; --on-accent:#FFFFFF;
   --error-text:#D70015; --window:#ECECEC; --field:#FFFFFF; --field-edge:rgba(0,0,0,.15); --button:#FFFFFF;
   /* new */ --link:#0068DA; --group:rgba(255,255,255,.62); --group-edge:rgba(0,0,0,.07); --separator:rgba(0,0,0,.08);
   --toolbar:#E6E6E6; --tab-selected:rgba(0,0,0,.08); --tab-label:rgba(0,0,0,.60); --tab-icon-selected:#0063E1; --popup-placeholder:rgba(0,0,0,.55); --control-shadow:0 0 0 .5px rgba(0,0,0,.15),0 1px 1px rgba(0,0,0,.06); --fill-hover:rgba(0,0,0,.07); --switch-off:rgba(0,0,0,.10); --switch-edge:rgba(0,0,0,.45); --knob:#FFFFFF; --knob-edge:rgba(0,0,0,.22);
@@ -11,7 +11,7 @@
 }
 @media (prefers-color-scheme: dark){
   :root{
-    --label:rgba(255,255,255,.85); --label-2:rgba(255,255,255,.55); --label-disabled:rgba(255,255,255,.25); --accent:#0A84FF;
+    --label:rgba(255,255,255,.85); --label-2:rgba(255,255,255,.55); --label-disabled:rgba(255,255,255,.25); --placeholder:rgba(255,255,255,.60); --accent:#0A84FF;
     --error-text:#FF7F78; --window:#2A2A2A; --field:rgba(255,255,255,.06); --field-edge:rgba(255,255,255,.14); --button:rgba(255,255,255,.14);
     --link:#5CACFF; --group:rgba(255,255,255,.05); --group-edge:rgba(255,255,255,.08); --separator:rgba(255,255,255,.09);
     --toolbar:#323232; --tab-selected:rgba(255,255,255,.12); --tab-label:rgba(255,255,255,.60); --tab-icon-selected:#5CACFF; --popup-placeholder:rgba(255,255,255,.85); --control-shadow:0 0 0 .5px rgba(255,255,255,.14),0 1px 1px rgba(0,0,0,.30); --fill-hover:rgba(255,255,255,.10); --switch-off:rgba(255,255,255,.16); --switch-edge:rgba(255,255,255,.40); --knob-edge:rgba(0,0,0,.35);
@@ -47,7 +47,7 @@ h2{font-size:13px;font-weight:600;margin:18px 0 6px 2px}
 .row p{margin:0;font-size:12px;color:var(--label-2)}
 /* Fields and pop-ups: the sign-in box's. */
 input{width:240px;height:22px;padding:0 7px;margin:0;background:var(--field);color:var(--label);border:1px solid var(--field-edge);border-radius:5px;font:inherit;font-size:13px;outline:none;user-select:text}
-input::placeholder{color:var(--label-disabled)}
+input::placeholder{color:var(--placeholder)} /* T-009: 4.7:1 light, 4.9:1 dark on the field */
 input:focus,select:focus-visible{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 45%,transparent);border-color:var(--accent)}
 /* Pop-ups ship with appearance:auto: WebKit draws the real macOS pop-up button and menu (D-R2). */
 select{height:22px;margin:0;font:inherit;font-size:13px;color:var(--label);appearance:auto}

@@ -310,6 +310,9 @@ struct Session {
     raw_token: String,
 }
 
+/// One SEMS+ day call (statisticsAndPreV2), body included.
+const DAY_TIMEOUT: Duration = Duration::from_secs(60);
+
 pub struct Client {
     http: reqwest::Client,
     creds: Option<Credentials>,
@@ -385,7 +388,8 @@ impl Client {
                 "startTime": format!("{date} 00:00:00"), "endTime": format!("{date} 23:59:59"),
             });
             let url = format!("{}/sems-plant/api/v1/hems/power/statisticsAndPreV2", s.api);
-            match self.post_plus(&url, s, body).await {
+            // A day's reply is ~488 KB and SEMS+ is slow (10-20 s): 60 s here, the client's 20 s elsewhere (T-012).
+            match self.post_plus(&url, s, body, Some(DAY_TIMEOUT)).await {
                 Err(SemsError::Expired) if attempt == 0 => {
                     self.plus = None;
                     continue;
@@ -425,7 +429,7 @@ impl Client {
         let t0 = json!({"uid":"","token":"","timestamp":0,"client":"semsPlusWeb","version":"","language":"en"});
         let body = json!({ "account": c.account, "pwd": plus_pwd(&c.password), "agreement": 1, "isChinese": false, "isLocal": false });
         let anon = Session { token: t0.to_string(), api: String::new(), station: String::new(), uid: String::new(), raw_token: String::new() };
-        let (v, raw) = match self.post_plus(PLUS_LOGIN, &anon, body).await {
+        let (v, raw) = match self.post_plus(PLUS_LOGIN, &anon, body, None).await {
             Err(SemsError::Parse { reason, reply }) if reason.starts_with("code ") => {
                 return Err(login_refused(&serde_json::from_str(&reply).unwrap_or_default(), "description"))
             }
@@ -437,7 +441,7 @@ impl Client {
         let raw_token = data["token"].as_str().ok_or_else(|| parse_err(missing("data.token")))?.to_owned();
         let api = data["api"].as_str().ok_or_else(|| parse_err(missing("data.api")))?.trim_end_matches('/').to_owned();
         let mut s = Session { token: data.to_string(), api, station: String::new(), uid, raw_token };
-        let (sv, sraw) = self.post_plus(&format!("{}/sems-plant/api/stations/simple-query", s.api), &s, json!({})).await?;
+        let (sv, sraw) = self.post_plus(&format!("{}/sems-plant/api/stations/simple-query", s.api), &s, json!({}), None).await?;
         s.station = sv["data"]["dataList"][0]["id"]
             .as_str()
             .ok_or_else(|| SemsError::Parse { reason: missing("data.dataList[0].id"), reply: sraw })?
@@ -452,8 +456,8 @@ impl Client {
     }
 
     /// A signed SEMS+ call. Maps 401/C0602 to `Expired` and any other non-"00000" code to `Parse`.
-    async fn post_plus(&self, url: &str, s: &Session, body: Value) -> Result<(Value, String), SemsError> {
-        let req = self
+    async fn post_plus(&self, url: &str, s: &Session, body: Value, timeout: Option<Duration>) -> Result<(Value, String), SemsError> {
+        let mut req = self
             .http
             .post(url)
             .header("Token", &s.token)
@@ -463,6 +467,9 @@ impl Client {
             .header("User-Agent", UA)
             .header("Accept", "application/json, text/plain, */*")
             .json(&body);
+        if let Some(t) = timeout {
+            req = req.timeout(t);
+        }
         let (v, raw) = send(req).await?;
         match v["code"].as_str() {
             Some("C0602") => Err(SemsError::Expired),

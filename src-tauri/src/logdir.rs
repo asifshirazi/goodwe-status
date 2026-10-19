@@ -175,7 +175,7 @@ pub fn line(dir: &Path, msg: &str) {
     }
 }
 
-/// Writes `bad-reply-<time>.json` with the reason and the redacted reply, keeps the newest 10,
+/// Writes `bad-reply-<time>-<nn>.json` with the reason and the redacted reply, keeps the newest 10,
 /// and logs the reason. A reply that isn't JSON is kept as text, cut to 4 KB.
 pub fn dump_bad_reply(dir: &Path, reason: &str, raw: &str) {
     let _ = fs::create_dir_all(dir);
@@ -184,7 +184,11 @@ pub fn dump_bad_reply(dir: &Path, reason: &str, raw: &str) {
         Err(_) => json!(scrub_text(&raw.chars().take(4096).collect::<String>())),
     };
     let (secs, stamp) = utc_stamp();
-    let name = format!("bad-reply-{secs}.json");
+    // Several bad replies can come in one second (T-012 goes on after one): never overwrite.
+    let name = (0..)
+        .map(|n| format!("bad-reply-{secs}-{n:02}.json"))
+        .find(|n| !dir.join(n).exists())
+        .unwrap_or_default();
     let body = json!({ "time": stamp, "reason": reason, "reply": reply });
     let _ = fs::write(dir.join(&name), serde_json::to_string_pretty(&body).unwrap_or_default());
     line(dir, &format!("unreadable reply: {reason} (saved {name})"));
@@ -294,6 +298,24 @@ mod tests {
         let all: String = names.iter().map(|n| fs::read_to_string(dir.join(n)).unwrap()).collect();
         assert!(!all.contains("secret"));
         assert!(fs::read_to_string(dir.join(LOG)).unwrap().contains("field `info.time` missing"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn dumps_in_one_second_get_their_own_files() {
+        let dir = std::env::temp_dir().join(format!("gw-logtest-sec-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        for i in 0..4 {
+            dump_bad_reply(&dir, &format!("reason {i}"), &format!(r#"{{"n":{i}}}"#));
+        }
+        let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("bad-reply-")).collect();
+        assert_eq!(names.len(), 4, "{names:?}");
+        names.sort();
+        // oldest first, so the keep-10 prune still drops the oldest
+        let reasons: Vec<_> = names.iter().map(|n| serde_json::from_str::<Value>(&fs::read_to_string(dir.join(n)).unwrap()).unwrap()["reason"].as_str().unwrap().to_owned()).collect();
+        assert_eq!(reasons, ["reason 0", "reason 1", "reason 2", "reason 3"]);
+        let log = fs::read_to_string(dir.join(LOG)).unwrap();
+        assert!(names.iter().all(|n| log.contains(n.as_str())), "each log line names its own file");
         fs::remove_dir_all(&dir).unwrap();
     }
 }

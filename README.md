@@ -8,9 +8,10 @@ A macOS menu bar app that shows your home battery level and whether the grid is 
 
 - **Grid off since** comes from the inverter's minute history, so it is right after a restart too.
 - **Usually back around 12:05 PM (last 5 days)** while the grid is off, and **Next cut usually around 1:35 PM · back around 4:30 PM** while it is on. Both are estimates from the last 5 days, shown only when those days agree; never a promise.
+- **Low battery alert:** while the grid is off, one alert with sound when the battery reaches 20% and one more at 10%. Change the level in **Settings… › General › Low battery alert** (the second alert is always at half of it).
 - **Chart:** point at it (or Tab, then ← →) to read the time, battery % and kW at that minute.
 - **Refresh:** the ↻ button at the top right, or ⌘R. The panel stays open while it refreshes.
-- **Settings…** (⌘,, at the bottom of the panel) holds your account (Sign Out removes the saved login from your Keychain), Open at login, the log folder and the device automation below. Signed out, the panel also shows **Sign In…**.
+- **Settings…** (⌘,, at the bottom of the panel) holds your account (Sign Out removes the saved login from your Keychain), Open at login, the low battery alert, the log folder and the device automation below. Signed out, the panel also shows **Sign In…**.
 - **Device automation:** Tuya / Smart Life devices can change by themselves when the grid goes off or comes back, each after its own delay. See [Device automation (Tuya)](#device-automation-tuya).
 
 ## Install
@@ -22,7 +23,7 @@ A macOS menu bar app that shows your home battery level and whether the grid is 
 - **Keychain:** after each update macOS asks once for each saved item (your SEMS login and, if connected, the Tuya keys). Click **Always Allow**.
 - **Focus can mute alerts:** to hear a power cut during Focus, add GoodWe Status under **System Settings › Focus › (your Focus) › Allowed Apps**.
 - **The history lines need a station without solar panels.** "Since", "Usually back around" and "Next cut" read outages from the minute history (grid at 0, battery carrying the house). With solar, self-consumption looks the same, so those lines would be wrong (the off-minute rule in `sems.rs` would also need the solar power at 0). The live grid state and alerts work with solar.
-- **Requests:** the history costs 5 extra requests when the app starts and one more each day; after that the same two requests per 2-minute poll as before (today's history comes with the chart).
+- **Requests:** the history costs one request per past day, once: finished days are kept in the app's data folder (`history.json`, no account details, removed on Sign Out), so a restart doesn't fetch them again. After that the same two requests per 2-minute poll as before (today's history comes with the chart). A slow day gets 60 s and one retry; a day that still fails is skipped and tried again at the next poll.
 - **Start at login** is on after first sign-in. To turn it off: **Settings… › General › Open at login**.
 
 ## Device automation (Tuya)

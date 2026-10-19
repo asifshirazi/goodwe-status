@@ -82,6 +82,14 @@ pub fn run() {
                 )
             };
             app.manage(auto.clone());
+            {
+                let mut m = mon.lock().unwrap();
+                m.low_pct = auto.low_battery_pct();
+                // Finished past days from the last run: the predictions don't wait for 5 fresh fetches.
+                if let Ok(d) = app.path().app_data_dir() {
+                    m.load_history(d.join("history.json"));
+                }
+            }
             // The tray item first: a Keychain prompt must never hold up the menu bar.
             shell::setup(app, log_dir)?;
             // The close button hides Settings (one instance, opened again by Settings…).

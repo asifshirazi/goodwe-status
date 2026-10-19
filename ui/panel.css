@@ -75,8 +75,8 @@
   border-radius:var(--gw-row-radius);color:var(--gw-label);font-size:13px}
 .gw-act .gw-ic{color:var(--gw-label-2)}
 .gw-act .k{margin-left:auto;color:var(--gw-label-2)}
-.gw-act:not([aria-disabled="true"]):hover,.gw-act:not([aria-disabled="true"]):focus-visible{background:var(--gw-highlight);color:var(--gw-on-highlight)}
-.gw-act:not([aria-disabled="true"]):hover .gw-ic,.gw-act:not([aria-disabled="true"]):hover .k,
+#root:not(.gw-still) .gw-act:not([aria-disabled="true"]):hover,.gw-act:not([aria-disabled="true"]):focus-visible{background:var(--gw-highlight);color:var(--gw-on-highlight)}
+#root:not(.gw-still) .gw-act:not([aria-disabled="true"]):hover .gw-ic,#root:not(.gw-still) .gw-act:not([aria-disabled="true"]):hover .k,
 .gw-act:focus-visible .gw-ic,.gw-act:focus-visible .k{color:var(--gw-on-highlight)}
 .gw-act[aria-disabled="true"],.gw-act[aria-disabled="true"] .gw-ic,.gw-act[aria-disabled="true"] .k{color:var(--gw-label-3)}
 @media (forced-colors: active){ .gw-act:focus-visible{outline:2px solid Highlight} }

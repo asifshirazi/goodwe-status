@@ -8,6 +8,7 @@ use crate::sems::{self, ChartSeries, Day, GridSignal, Reading, SemsError};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -117,6 +118,16 @@ pub struct Monitor {
     pub user_poll: bool,
     /// Bumped on sign-out and on a new account: a poll that began before drops its result.
     gen: u64,
+    /// `app_data_dir()/history.json`: the finished past days, kept across launches (T-012).
+    history_file: Option<PathBuf>,
+    /// A day became final, or one was pruned, since the file was written.
+    history_unsaved: bool,
+    /// Settings › General › Low battery alert, in % (T-008).
+    pub low_pct: u8,
+    /// Low battery levels already alerted during this outage.
+    low_fired: Vec<u8>,
+    /// A low battery alert for the shell (the battery %), taken by `poll_once`.
+    low_alert: Option<f64>,
 }
 
 impl Monitor {
@@ -141,13 +152,43 @@ impl Monitor {
             polling: false,
             user_poll: false,
             gen: 0,
+            history_file: None,
+            history_unsaved: false,
+            low_pct: rules::LOW_BATTERY_DEFAULT,
+            low_fired: Vec::new(),
+            low_alert: None,
         }
     }
 
     /// Sign Out (or another account signs in): a fresh monitor. Keeps the poll flag, and bumps
     /// `gen` so a poll already running drops its result instead of signing the panel back in.
+    /// The saved history belongs to the old account too: its file goes.
     pub fn reset(&mut self, signed_in: bool) {
-        *self = Monitor { polling: self.polling, gen: self.gen + 1, ..Monitor::new(signed_in) };
+        if let Some(p) = &self.history_file {
+            let _ = std::fs::remove_file(p);
+        }
+        *self = Monitor { polling: self.polling, gen: self.gen + 1, history_file: self.history_file.take(), low_pct: self.low_pct, ..Monitor::new(signed_in) };
+    }
+
+    /// At launch: the finished past days saved by an earlier run. Missing or unreadable = none.
+    /// `after_history` drops the ones that are too old and saves from then on.
+    pub fn load_history(&mut self, path: PathBuf) {
+        let days: BTreeMap<i64, GridDay> = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        self.history_final.extend(days.keys());
+        self.history.extend(days);
+        self.history_file = Some(path);
+    }
+
+    /// Writes the finished past days (never today, never an account detail), tmp + rename.
+    fn save_history(&self) {
+        let Some(path) = &self.history_file else { return };
+        let days: BTreeMap<_, _> = self.history.iter().filter(|(d, _)| self.history_final.contains(d)).collect();
+        let tmp = path.with_extension("tmp");
+        let ok = path.parent().is_none_or(|d| std::fs::create_dir_all(d).is_ok())
+            && std::fs::write(&tmp, serde_json::to_string(&days).expect("history serialises")).is_ok();
+        if ok {
+            let _ = std::fs::rename(tmp, path);
+        }
     }
 
     /// Refresh click or ⌘R. `None`: ignore it (signed out, or a user poll already runs).
@@ -189,6 +230,13 @@ impl Monitor {
             self.own.retain(|p| p.0.day() == r.time.day());
             self.own.push((r.time, b.soc, b.watts / 1000.0));
         }
+        if let Some(b) = &r.battery {
+            // Never on the first reading (prev Unknown): levels already passed are marked silently.
+            let level = rules::low_battery(&mut self.low_fired, self.low_pct, b.soc, next == GridState::Off);
+            if prev != GridState::Unknown && level.is_some() {
+                self.low_alert = Some(b.soc);
+            }
+        }
         let notice = rules::grid_changed(prev, next).then(|| Notice { grid: next, soc: r.battery.as_ref().map(|b| b.soc) });
         self.last = Some(r);
         notice
@@ -207,8 +255,8 @@ impl Monitor {
 
     /// Stores one day's grid history. `now` = station now, absolute minutes.
     pub fn on_day(&mut self, day: i64, grid: GridDay, now: i64) {
-        if now >= (day + 1) * DAY + DAY_FINAL_AFTER_MIN {
-            self.history_final.insert(day);
+        if now >= (day + 1) * DAY + DAY_FINAL_AFTER_MIN && self.history_final.insert(day) {
+            self.history_unsaved = true;
         }
         self.history.insert(day, grid);
     }
@@ -228,8 +276,13 @@ impl Monitor {
     /// After a poll's history calls: drop old days, then read the current outage's start.
     pub fn after_history(&mut self, now: i64) {
         let oldest = now.div_euclid(DAY) - PAST_DAYS;
+        let finals = self.history_final.len();
         self.history.retain(|d, _| *d >= oldest);
         self.history_final.retain(|d| *d >= oldest);
+        if self.history_unsaved || self.history_final.len() != finals {
+            self.save_history();
+            self.history_unsaved = false;
+        }
         self.history_tried = true;
         self.hist_start = outages::history_start(&self.history, now);
         if let (GridState::Off, HistStart::Start(s)) = (self.grid, self.hist_start) {
@@ -314,9 +367,14 @@ pub struct PollReport {
     pub disagreement: Option<String>,
     /// Errors worth a log line (network, expired, signed out).
     pub errors: Vec<String>,
+    /// The battery % when it reached a low battery level while the grid is off (T-008).
+    pub low_battery: Option<f64>,
 }
 
-pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monitor>) -> PollReport {
+/// One poll. The reading's part of the report (grid notice, low battery, disagreement) goes to
+/// `live` before any day call, so the alerts and the Tuya switch never wait for today's chart or
+/// the past days (B-O1); the returned report holds the rest. A failed reading only returns.
+pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monitor>, mut live: impl FnMut(PollReport)) -> PollReport {
     let mut rep = PollReport::default();
     let mut src = src.lock().await;
     let gen = mon.lock().unwrap().gen;
@@ -353,8 +411,10 @@ pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monit
     let today = {
         let Some(mut m) = current() else { return rep };
         rep.notice = m.on_reading(r, Instant::now());
+        rep.low_battery = m.low_alert.take();
         m.station_now(Instant::now())
     };
+    live(std::mem::take(&mut rep));
     if let (true, Some(today)) = (has_battery, today) {
         let now = today.0.div_euclid(60);
         // Today: chart and history are one call, so no extra request.
@@ -376,17 +436,26 @@ pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monit
             }
             m.days_to_fetch(now)
         };
-        // Past days, newest first; the first error stops this poll's history (the next one retries).
+        // Past days, newest first. A network error is tried once more; a day that still fails is
+        // skipped (the next poll tries it again) and the older days still load (T-012). Only a
+        // session problem stops this poll's history.
         for d in todo {
             let date = LocalTs(d * 86_400);
-            match src.day(date, offset).await.and_then(|x| x.grid) {
+            let mut got = src.day(date, offset).await.and_then(|x| x.grid);
+            if matches!(got, Err(SemsError::Network(_))) {
+                got = src.day(date, offset).await.and_then(|x| x.grid);
+            }
+            match got {
                 Ok(g) => match current() {
                     Some(mut m) => m.on_day(d, g, now),
                     None => return rep,
                 },
                 Err(e) => {
+                    let stop = matches!(e, SemsError::Expired | SemsError::SignedOut | SemsError::WrongLogin(_));
                     failed(&mut rep, &format!("history {}", date.date()), e);
-                    break;
+                    if stop {
+                        break;
+                    }
                 }
             }
         }
@@ -400,8 +469,11 @@ pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monit
 /// Logs a failed SEMS+ read; an unreadable reply also goes to the redacted dump.
 fn failed(rep: &mut PollReport, what: &str, e: SemsError) {
     rep.errors.push(format!("{what}: {e}"));
+    // Today's chart and grid come from one reply: an unreadable one is dumped once (T-004).
     if let SemsError::Parse { reason, reply } = e {
-        rep.bad_replies.push((format!("{what}: {reason}"), reply));
+        if !rep.bad_replies.iter().any(|b| b.1 == reply) {
+            rep.bad_replies.push((format!("{what}: {reason}"), reply));
+        }
     }
 }
 
@@ -415,7 +487,7 @@ pub async fn run<S: Source>(
 ) {
     loop {
         mon.lock().unwrap().polling = true;
-        let rep = poll_once(&src, &mon).await;
+        let rep = poll_once(&src, &mon, &mut on_report).await;
         // Before the report, whose redraw then shows the spin stopped.
         {
             let mut m = mon.lock().unwrap();
@@ -557,14 +629,16 @@ mod tests {
         /// Today's call (the day of the last reading): chart from here, history from `history`.
         charts: VecDeque<Result<ChartSeries, SemsError>>,
         history: std::collections::HashMap<i64, GridDay>,
-        /// Past days whose next call fails once.
-        fail_once: Vec<i64>,
+        /// Past days whose next call fails with this error (once per entry).
+        fail: Vec<(i64, SemsError)>,
         today: Option<i64>,
         polls: Arc<Mutex<u32>>,
         /// Every day asked for, in order.
         days: Arc<Mutex<Vec<i64>>>,
         /// When set, `reading()` waits for it: a poll held open mid-flight.
         gate: Option<Arc<tokio::sync::Notify>>,
+        /// How long every `day()` call takes (a hanging SEMS+).
+        slow: Duration,
     }
 
     impl Source for Fake {
@@ -588,14 +662,17 @@ mod tests {
         async fn day(&mut self, date: LocalTs, _: Option<f64>) -> Result<Day, SemsError> {
             let d = date.day();
             self.days.lock().unwrap().push(d);
+            tokio::time::sleep(self.slow).await;
             let grid = Ok(self.history.get(&d).cloned().unwrap_or(GridDay { off: vec![], newest: Some(1439) }));
             if Some(d) == self.today {
-                let chart = self.charts.pop_front().unwrap_or(Err(SemsError::Network("empty".into())))?;
-                return Ok(Day { chart: Ok(chart), grid });
+                return match self.charts.pop_front().unwrap_or(Err(SemsError::Network("empty".into()))) {
+                    // One unreadable reply: chart and grid both fail on it, as in sems::Client::day.
+                    Err(e @ SemsError::Parse { .. }) => Ok(Day { chart: Err(e.clone()), grid: Err(e) }),
+                    c => Ok(Day { chart: Ok(c?), grid }),
+                };
             }
-            if let Some(i) = self.fail_once.iter().position(|x| *x == d) {
-                self.fail_once.remove(i);
-                return Err(SemsError::Network("timeout".into()));
+            if let Some(i) = self.fail.iter().position(|x| x.0 == d) {
+                return Err(self.fail.remove(i).1);
             }
             Ok(Day { chart: Err(SemsError::Network("past day".into())), grid })
         }
@@ -608,13 +685,52 @@ mod tests {
             readings: readings.into(),
             charts: charts.into(),
             history: Default::default(),
-            fail_once: vec![],
+            fail: vec![],
             today: None,
             polls: polls.clone(),
             days: Default::default(),
             gate: None,
+            slow: Duration::ZERO,
         };
         (Arc::new(tokio::sync::Mutex::new(f)), polls)
+    }
+
+    /// `poll_once` with its live part folded back in, for tests that read one report.
+    async fn poll(src: &tokio::sync::Mutex<Fake>, mon: &Mutex<Monitor>) -> PollReport {
+        let mut l = PollReport::default();
+        let mut r = poll_once(src, mon, |x| l = x).await;
+        (r.notice, r.disagreement, r.low_battery) = (l.notice, l.disagreement, l.low_battery);
+        r
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_history_never_delays_the_alerts() {
+        // B-O1: SEMS+ takes 60 s per day call (today + 3 past days + retries = minutes). The grid
+        // notice (which also runs the Tuya switch in after_poll) and the low battery alert must
+        // reach the shell as soon as the reading is in, not when the poll ends.
+        let r = |hhmm: &str, grid, soc| Ok(reading(&format!("10/18/2026 {hhmm}:00"), grid, soc, 900.0));
+        let (src, _) = fake(vec![r("08:00", GridSignal::On, 25.0), r("08:02", GridSignal::Off, 22.0), r("08:04", GridSignal::Off, 19.6)], vec![]);
+        src.lock().await.slow = Duration::from_secs(60);
+        let mon = Arc::new(Mutex::new(Monitor::new(true)));
+        let (_tx, rx) = mpsc::channel(4);
+        let got = Arc::new(Mutex::new(vec![]));
+        let t0 = tokio::time::Instant::now();
+        let task = tokio::spawn(run(src, mon, rx, {
+            let got = got.clone();
+            move |rep: PollReport| got.lock().unwrap().push((t0.elapsed().as_secs(), rep.notice.map(|n| n.text()), rep.low_battery))
+        }));
+        let alerts = |got: &[(u64, Option<String>, Option<f64>)]| got.iter().filter(|g| g.1.is_some() || g.2.is_some()).cloned().collect::<Vec<_>>();
+        // poll 1: today + 3 past days, 60 s each, ends at 240 s; poll 2 at 360 s (2 min later),
+        // today + the last 2 past days, ends at 540 s; poll 3 at 660 s
+        tokio::time::sleep(Duration::from_secs(661)).await;
+        let got = got.lock().unwrap().clone();
+        assert_eq!(
+            alerts(&got),
+            vec![(360, Some("Grid is off · battery 22%".to_owned()), None), (660, None, Some(19.6))],
+            "each alert at its reading, not 3-4 min later at the poll's end"
+        );
+        assert!(got.iter().any(|g| g.0 == 540), "poll 2 really ran its slow day calls: {got:?}");
+        task.abort();
     }
 
     fn day_of(s: &str) -> i64 {
@@ -650,31 +766,104 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn history_budget_and_retry() {
+    async fn history_budget_retry_and_skip() {
         let r = |hhmm: &str| Ok(reading(&format!("10/18/2026 {hhmm}:00"), GridSignal::On, 90.0, 0.0));
         let chart = || Ok(ChartSeries { day: day_of("10/18/2026 00:00:00"), points: vec![] });
         let (src, _) = fake(vec![r("11:22"), r("11:24"), r("11:26"), r("11:28")], vec![chart(), chart(), chart(), chart()]);
         let today = day_of("10/18/2026 00:00:00");
-        src.lock().await.fail_once = vec![today - 4];
+        let net = || SemsError::Network("timeout".into());
+        src.lock().await.fail = vec![(today - 1, net()), (today - 1, net()), (today - 4, net())];
         let days = src.lock().await.days.clone();
         let mon = Mutex::new(Monitor::new(true));
         let take = || std::mem::take(&mut *days.lock().unwrap());
-        // cold start: today (same call as the chart) + 3 past days, newest first
-        assert!(poll_once(&src, &mon).await.errors.is_empty());
-        assert_eq!(take(), vec![today, today - 1, today - 2, today - 3]);
+        // cold start: today (same call as the chart) + 3 past days, newest first; yesterday fails
+        // twice (call + one retry): skipped, and the older days still load (T-012)
+        let rep = poll(&src, &mon).await;
+        assert_eq!(rep.errors, vec!["history 2026-10-17: network: timeout".to_owned()]);
+        assert_eq!(take(), vec![today, today - 1, today - 1, today - 2, today - 3]);
         assert!(mon.lock().unwrap().history_tried);
         assert!(!mon.lock().unwrap().past_days_loaded(today));
-        // day −4 fails: the poll stops there, no inner retry
-        let rep = poll_once(&src, &mon).await;
-        assert_eq!(rep.errors, vec!["history 2026-10-14: network: timeout".to_owned()]);
-        assert_eq!(take(), vec![today, today - 4]);
-        // the next poll retries it and goes on
-        poll_once(&src, &mon).await;
-        assert_eq!(take(), vec![today, today - 4, today - 5]);
+        // the next poll: yesterday again, day −4 fails once and its retry gets it, then −5
+        assert!(poll(&src, &mon).await.errors.is_empty());
+        assert_eq!(take(), vec![today, today - 1, today - 4, today - 4, today - 5]);
         assert!(mon.lock().unwrap().past_days_loaded(today));
         // steady state: only today's call, as in T-001
-        poll_once(&src, &mon).await;
+        poll(&src, &mon).await;
         assert_eq!(take(), vec![today]);
+    }
+
+    #[tokio::test]
+    async fn history_unreadable_day_not_retried_and_expired_stops() {
+        let r = Ok(reading("10/18/2026 11:22:00", GridSignal::On, 90.0, 0.0));
+        let today = day_of("10/18/2026 00:00:00");
+        let (src, _) = fake(vec![r], vec![Ok(ChartSeries { day: today, points: vec![] })]);
+        let bad = SemsError::Parse { reason: "code X".into(), reply: "{}".into() };
+        src.lock().await.fail = vec![(today - 1, bad), (today - 2, SemsError::Expired)];
+        let days = src.lock().await.days.clone();
+        let mon = Mutex::new(Monitor::new(true));
+        let rep = poll(&src, &mon).await;
+        assert_eq!(*days.lock().unwrap(), vec![today, today - 1, today - 2], "no retry on a bad reply; Expired ends the poll's history");
+        assert_eq!((rep.errors.len(), rep.bad_replies.len()), (2, 1));
+    }
+
+    #[test]
+    fn history_kept_on_disk() {
+        let p = std::env::temp_dir().join(format!("gw-history-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        let t = LocalTs::parse("10/18/2026 12:00:00").unwrap().0 / 60;
+        let today = t.div_euclid(DAY);
+        let launch = || {
+            let mut m = Monitor::new(true);
+            m.load_history(p.clone());
+            m
+        };
+        let mut m = launch();
+        assert!(m.history.is_empty(), "no file: no history");
+        let g = GridDay { off: vec![(600, true), (601, false)], newest: Some(1439) };
+        m.on_day(today - 1, g.clone(), t);
+        m.on_day(today, GridDay { off: vec![], newest: Some(720) }, t);
+        m.after_history(t);
+        // the next launch: yesterday is back and never fetched again; today isn't on disk
+        let mut n = launch();
+        assert_eq!(n.history.get(&(today - 1)), Some(&g));
+        assert!(!n.history.contains_key(&today));
+        assert_eq!(n.days_to_fetch(t), vec![today - 2, today - 3, today - 4]);
+        // a day older than the 5 is pruned from the file too
+        n.after_history(t + 6 * DAY);
+        assert!(launch().history.is_empty());
+        // an unreadable file = no history, no error
+        std::fs::write(&p, "{not json").unwrap();
+        assert!(launch().history.is_empty());
+        // Sign Out (or another account): the file goes
+        m.reset(false);
+        assert!(!p.exists() && m.history_file.is_some());
+    }
+
+    #[test]
+    fn low_battery_alert_during_a_cut() {
+        let t0 = Instant::now();
+        let mut m = Monitor::new(true);
+        let mut at = |hhmm: &str, grid, soc| {
+            m.on_reading(reading(&format!("10/18/2026 {hhmm}:00"), grid, soc, 900.0), t0);
+            m.low_alert.take()
+        };
+        assert_eq!(at("08:00", GridSignal::Off, 18.0), None, "never on the first reading");
+        assert_eq!(at("08:05", GridSignal::Off, 15.0), None, "20 was passed before launch");
+        assert_eq!(at("08:10", GridSignal::Off, 10.0), Some(10.0));
+        assert_eq!(at("08:15", GridSignal::On, 10.0), None);
+        assert_eq!(at("08:20", GridSignal::Off, 20.0), Some(20.0), "a new cut: armed again");
+        m.low_pct = 30;
+        m.reset(false);
+        assert_eq!(m.low_pct, 30, "the setting survives Sign Out");
+    }
+
+    #[tokio::test]
+    async fn poll_reports_low_battery() {
+        let r = |hhmm: &str, soc| Ok(reading(&format!("10/18/2026 {hhmm}:00"), GridSignal::Off, soc, 900.0));
+        let (src, _) = fake(vec![r("08:00", 25.0), r("08:02", 19.6)], vec![]);
+        let mon = Mutex::new(Monitor::new(true));
+        assert_eq!(poll(&src, &mon).await.low_battery, None);
+        assert_eq!(poll(&src, &mon).await.low_battery, Some(19.6));
     }
 
     #[tokio::test]
@@ -692,21 +881,23 @@ mod tests {
             vec![Ok(ChartSeries { day: 0, points: vec![] }), Err(bad()), Err(SemsError::Network("x".into()))],
         );
         let mon = Mutex::new(Monitor::new(true));
-        assert_eq!(poll_once(&src, &mon).await, PollReport::default());
-        let r = poll_once(&src, &mon).await;
+        assert_eq!(poll(&src, &mon).await, PollReport::default());
+        let r = poll(&src, &mon).await;
         assert!(r.disagreement.unwrap().contains("vac1 230"));
-        assert_eq!(r.bad_replies.len(), 1, "the chart's bad reply is reported too");
-        let r = poll_once(&src, &mon).await;
+        // T-004: today's one reply fails both chart and grid: dumped once, logged twice.
+        assert_eq!(r.bad_replies.len(), 1, "the chart's bad reply is reported once");
+        assert_eq!(r.errors.len(), 2);
+        let r = poll(&src, &mon).await;
         assert_eq!(r.notice.unwrap().text(), "Grid is off · battery 86%");
-        let r = poll_once(&src, &mon).await;
+        let r = poll(&src, &mon).await;
         assert_eq!(r.bad_replies[0].0, "field `invert_full.vac1` missing");
-        poll_once(&src, &mon).await;
+        poll(&src, &mon).await;
         assert_eq!(mon.lock().unwrap().failures, 2);
-        poll_once(&src, &mon).await;
+        poll(&src, &mon).await;
         assert!(!mon.lock().unwrap().signed_in);
         assert!(!src.lock().await.signed_in);
         // signed out: no more calls to SEMS
-        poll_once(&src, &mon).await;
+        poll(&src, &mon).await;
         assert_eq!(*polls.lock().unwrap(), 6);
     }
 
@@ -758,7 +949,7 @@ mod tests {
         let (src, _) = fake(vec![r], vec![Ok(ChartSeries { day: day_of("10/18/2026 00:00:00"), points: vec![(600, 90.0, 0.9)] })]);
         let mon = Mutex::new(Monitor::new(true));
         mon.lock().unwrap().account = Some("name@example.com".into());
-        poll_once(&src, &mon).await;
+        poll(&src, &mon).await;
         {
             let m = mon.lock().unwrap();
             assert!(m.last.is_some() && !m.history.is_empty() && m.off_since.is_some() && m.chart_view(Instant::now()).is_some());
@@ -782,7 +973,7 @@ mod tests {
         let mon = Arc::new(Mutex::new(Monitor::new(true)));
         let poll = tokio::spawn({
             let (src, mon) = (src.clone(), mon.clone());
-            async move { poll_once(&src, &mon).await }
+            async move { poll(&src, &mon).await }
         });
         tokio::task::yield_now().await;
         assert!(src.try_lock().is_err(), "the poll holds the client");
@@ -798,7 +989,7 @@ mod tests {
         let (src, _) = fake(vec![Err(SemsError::WrongLogin("Email or password error".into()))], vec![]);
         let mon = Mutex::new(Monitor::new(true));
         mon.lock().unwrap().account = Some("name@example.com".into());
-        poll_once(&src, &mon).await;
+        poll(&src, &mon).await;
         let p = crate::view::panel(&mon.lock().unwrap(), Instant::now(), false);
         // signedIn false → panel.js shows Sign In… (panel_footer_signed_out_has_sign_in); Settings shows no email
         assert!(!p.signed_in && crate::settings::account(&mon.lock().unwrap()).email.is_none());

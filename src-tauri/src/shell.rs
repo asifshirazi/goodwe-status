@@ -87,10 +87,18 @@ fn place(app: &AppHandle, win: &WebviewWindow, rect: Rect) {
     // The screen holding the item, matched in physical pixels (each screen's own scale).
     // Not `monitor_from_point`: on macOS it wants points, while the tray rect is physical.
     let item = rect.position.to_physical::<f64>(1.0);
-    let mon = app.available_monitors().unwrap_or_default().into_iter().find(|m| {
+    let mons = app.available_monitors().unwrap_or_default();
+    let idx = mons.iter().position(|m| {
         let (mp, ms) = (m.position(), m.size());
         (mp.x as f64..mp.x as f64 + ms.width as f64).contains(&item.x) && (mp.y as f64..mp.y as f64 + ms.height as f64).contains(&item.y)
     });
+    // T-005: the panel once opened on the other screen; this line says where and why next time.
+    let screen = idx.map_or("none".to_owned(), |i| {
+        let (mp, ms) = (mons[i].position(), mons[i].size());
+        format!("{} of {} at {},{} {}x{}", i + 1, mons.len(), mp.x, mp.y, ms.width, ms.height)
+    });
+    let isize = rect.size.to_physical::<f64>(1.0);
+    let mon = idx.map(|i| mons[i].clone());
     let scale = mon.as_ref().map_or_else(|| win.scale_factor().unwrap_or(2.0), |m| m.scale_factor());
     let (p, s) = (rect.position.to_logical::<f64>(scale), rect.size.to_logical::<f64>(scale));
     let mut x = p.x;
@@ -98,7 +106,10 @@ fn place(app: &AppHandle, win: &WebviewWindow, rect: Rect) {
         let (mp, ms) = (m.position().to_logical::<f64>(scale), m.size().to_logical::<f64>(scale));
         x = x.clamp(mp.x + 8.0, (mp.x + ms.width - PANEL_W - 8.0).max(mp.x + 8.0));
     }
-    let _ = win.set_position(LogicalPosition::new(x, p.y + s.height + 4.0));
+    let y = p.y + s.height + 4.0;
+    let _ = win.set_position(LogicalPosition::new(x, y));
+    let line = format!("panel placed: screen {screen} · item {},{} {}x{} · scale {scale} → {x},{y}", item.x, item.y, isize.width, isize.height);
+    logdir::line(&app.state::<Shell>().log_dir, &line);
 }
 
 /// `give_back_focus`: after Esc or an action, hand the keyboard back to the app the user was in.
@@ -164,7 +175,8 @@ pub fn ask_notifications(app: &AppHandle) {
     });
 }
 
-/// After every poll: log, notify on a confirmed grid change, redraw.
+/// After every poll, twice: the reading's part first (notices, Tuya, redraw), then the day calls'
+/// part. Logs, notifies on a confirmed grid change and on low battery, redraws.
 pub fn after_poll(app: &AppHandle, rep: PollReport) {
     let dir = &app.state::<Shell>().log_dir;
     for e in &rep.errors {
@@ -177,21 +189,30 @@ pub fn after_poll(app: &AppHandle, rep: PollReport) {
         logdir::line(dir, &format!("grid signals disagree, state kept: {d}"));
     }
     if let Some(n) = rep.notice {
-        let (text, dir) = (n.text(), dir.clone());
-        logdir::line(&dir, &format!("notice: {text}"));
-        tauri::async_runtime::spawn(async move {
-            if let Err(e) = notify::send(text).await {
-                logdir::line(&dir, &format!("notification not sent: {e}"));
-            }
-        });
+        alert(dir, n.text());
         // After the alert is on its way; the lights run in their own tasks and never hold it up.
         let at = app.state::<Arc<Mutex<Monitor>>>().lock().unwrap().station_now(Instant::now());
         if let Some(at) = at {
             app.state::<Arc<crate::automation::Automation>>().grid_changed(n.grid, at);
         }
     }
+    // After the grid notice when one reading brings both.
+    if let Some(soc) = rep.low_battery {
+        alert(dir, crate::rules::low_battery_text(soc));
+    }
     refresh(app);
     check_notifications(app);
+}
+
+/// A notification with sound, logged; sent in its own task.
+fn alert(dir: &std::path::Path, text: String) {
+    logdir::line(dir, &format!("notice: {text}"));
+    let dir = dir.to_owned();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = notify::send(text).await {
+            logdir::line(&dir, &format!("notification not sent: {e}"));
+        }
+    });
 }
 
 #[tauri::command]

@@ -92,6 +92,8 @@ pub struct Account {
 #[serde(rename_all = "camelCase")]
 pub struct General {
     pub open_at_login: bool,
+    /// Low battery alert, in % (T-008).
+    pub low_battery: u8,
 }
 
 pub fn account(m: &Monitor) -> Account {
@@ -106,7 +108,7 @@ fn state(app: &AppHandle) -> Option<State> {
     Some(State {
         pane: pane(auto.pane().as_deref()),
         account,
-        general: General { open_at_login: app.state::<Settings>().open_at_login.load(Ordering::SeqCst) },
+        general: General { open_at_login: app.state::<Settings>().open_at_login.load(Ordering::SeqCst), low_battery: auto.low_battery_pct() },
         auto: view,
     })
 }
@@ -214,6 +216,12 @@ pub async fn settings_action(app: AppHandle, a: Value) -> Result<(), String> {
             logdir::line(&dir, &format!("open at login: {}", err.unwrap_or_else(|| if now { "on" } else { "off" }.into())));
         }
         "logs" => shell::open_logs(&app),
+        "low_battery" => {
+            if let Some(p) = a["pct"].as_u64() {
+                let p = auto.set_low_battery_pct(p.min(100) as u8);
+                app.state::<Arc<Mutex<Monitor>>>().lock().unwrap().low_pct = p;
+            }
+        }
         "enable" => num("device").into_iter().for_each(|d| auto.set_on(d, on)),
         "choice" => {
             let which = if a["which"] == "on" { Which::On } else { Which::Off };
@@ -322,6 +330,22 @@ mod tests {
     }
 
     #[test]
+    fn low_battery_setting_saved_and_kept_in_range() {
+        let hooks = || crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), off_now: Box::new(|| None) };
+        let p = std::env::temp_dir().join(format!("gw-low-{}.json", std::process::id()));
+        // A settings file from before T-008 (no field): the default.
+        std::fs::write(&p, r#"{"devices":[],"pane":"general"}"#).unwrap();
+        let auto = Automation::new(Some(p.clone()), hooks());
+        assert_eq!(auto.low_battery_pct(), 20);
+        assert_eq!(auto.set_low_battery_pct(30), 30);
+        assert_eq!(Automation::new(Some(p.clone()), hooks()).low_battery_pct(), 30, "saved");
+        assert_eq!((auto.set_low_battery_pct(1), auto.set_low_battery_pct(90)), (5, 50));
+        std::fs::write(&p, r#"{"low_battery_pct":99}"#).unwrap();
+        assert_eq!(Automation::new(Some(p.clone()), hooks()).low_battery_pct(), 50, "an edited file is kept in range");
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
     fn account_only_while_signed_in() {
         let mut m = Monitor::new(true);
         assert_eq!(account(&m), Account { signed_in: true, email: None }, "before the Keychain answers: 'Signed in'");
@@ -364,11 +388,11 @@ mod tests {
     #[test]
     fn settings_state_shape() {
         let auto = Automation::new(None, crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), off_now: Box::new(|| None) });
-        let s = State { pane: "general", account: account(&Monitor::new(false)), general: General { open_at_login: true }, auto: auto.view(false) };
+        let s = State { pane: "general", account: account(&Monitor::new(false)), general: General { open_at_login: true, low_battery: 20 }, auto: auto.view(false) };
         let v = serde_json::to_value(s).unwrap();
         for k in ["pane", "account", "general", "automation", "tuya", "devices", "add"] {
             assert!(v.get(k).is_some(), "missing {k}: {v}");
         }
-        assert_eq!(v["general"], serde_json::json!({ "openAtLogin": true }));
+        assert_eq!(v["general"], serde_json::json!({ "openAtLogin": true, "lowBattery": 20 }));
     }
 }

@@ -40,6 +40,39 @@ pub fn grid_changed(prev: GridState, next: GridState) -> bool {
     prev != GridState::Unknown && next != GridState::Unknown && prev != next
 }
 
+/// Settings › General › Low battery alert: the default, in %.
+pub const LOW_BATTERY_DEFAULT: u8 = 20;
+/// The setting's range (an edited file can say anything).
+pub fn low_battery_pct(p: u8) -> u8 {
+    p.clamp(5, 50)
+}
+/// A level alerted once is armed again when the battery climbs this far above it.
+const LOW_REARM: f64 = 5.0;
+
+/// T-008: while the grid is off, one alert when the battery reaches `pct` and one at half of it.
+/// `fired` holds the levels alerted this outage: all re-arm when the grid isn't off, one re-arms
+/// when the battery climbs 5 above it. Returns the lowest level reached now that wasn't fired.
+pub fn low_battery(fired: &mut Vec<u8>, pct: u8, soc: f64, grid_off: bool) -> Option<u8> {
+    if !grid_off {
+        fired.clear();
+        return None;
+    }
+    fired.retain(|l| soc <= *l as f64 + LOW_REARM);
+    let mut hit = None;
+    for level in [pct, pct / 2] {
+        if soc <= level as f64 && !fired.contains(&level) {
+            fired.push(level);
+            hit = Some(level);
+        }
+    }
+    hit
+}
+
+/// "Battery low · 19% · grid is off".
+pub fn low_battery_text(soc: f64) -> String {
+    format!("Battery low · {}% · grid is off", soc.round())
+}
+
 /// `since_change`: app-clock time since `info.time` last changed (None before any reading).
 pub fn is_stale(since_change: Option<Duration>, failures: u32) -> bool {
     failures >= STALE_FAILURES || since_change.is_some_and(|d| d >= STALE_AFTER)
@@ -119,6 +152,24 @@ mod tests {
     use super::*;
     use GridSignal as S;
     use GridState::*;
+
+    #[test]
+    fn low_battery_levels_and_rearm() {
+        let mut f = vec![];
+        let mut at = |soc, off| low_battery(&mut f, 20, soc, off);
+        assert_eq!(at(25.0, true), None);
+        assert_eq!(at(20.0, true), Some(20), "fires at the setting");
+        assert_eq!(at(18.0, true), None, "once");
+        assert_eq!(at(26.0, true), None, "re-arms 5 above");
+        assert_eq!(at(19.0, true), Some(20));
+        assert_eq!(at(10.0, true), Some(10), "again at half");
+        assert_eq!(at(9.0, true), None);
+        assert_eq!(at(9.0, false), None, "grid back: no alert, all re-armed");
+        assert_eq!(at(8.0, true), Some(10), "a drop past both levels at once: one alert, the lower level");
+        assert_eq!(at(15.0, true), None, "20 was marked too");
+        assert_eq!(low_battery(&mut vec![], 30, 14.0, true), Some(15), "half of 30");
+        assert_eq!(low_battery_text(19.4), "Battery low · 19% · grid is off");
+    }
 
     #[test]
     fn grid_state_and_notifications() {

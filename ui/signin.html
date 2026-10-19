@@ -7,12 +7,12 @@
 <style>
 /* The sign-in box (hand-off § 3). Tokens follow the system appearance. */
 :root{
-  --label:rgba(0,0,0,.85); --label-disabled:rgba(0,0,0,.25); --accent:#007AFF; --on-accent:#FFFFFF;
+  --label:rgba(0,0,0,.85); --label-disabled:rgba(0,0,0,.25); --placeholder:rgba(0,0,0,.55); --accent:#007AFF; --on-accent:#FFFFFF;
   --error-text:#D70015; --window:#ECECEC; --field:#FFFFFF; --field-edge:rgba(0,0,0,.15); --button:#FFFFFF;
 }
 @media (prefers-color-scheme: dark){
   :root{
-    --label:rgba(255,255,255,.85); --label-disabled:rgba(255,255,255,.25); --accent:#0A84FF;
+    --label:rgba(255,255,255,.85); --label-disabled:rgba(255,255,255,.25); --placeholder:rgba(255,255,255,.60); --accent:#0A84FF;
     --error-text:#FF6961; --window:#2A2A2A; --field:rgba(255,255,255,.06); --field-edge:rgba(255,255,255,.14);
     --button:rgba(255,255,255,.14);
   }
@@ -29,7 +29,7 @@ label{display:block;text-align:left;margin:0 0 8px}
 label span{display:block;font-size:11px;margin:0 0 3px}
 input{display:block;width:100%;height:24px;padding:0 7px;margin:0;background:var(--field);color:var(--label);
   border:1px solid var(--field-edge);border-radius:6px;font:inherit;font-size:13px;outline:none;user-select:text}
-input::placeholder{color:var(--label-disabled)}
+input::placeholder{color:var(--placeholder)} /* T-009: 4.7:1 light, 5.4:1 dark on the field */
 input:focus{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 45%,transparent);border-color:var(--accent)}
 .err{color:var(--error-text);font-size:11px;text-align:left;margin:2px 0 6px;min-height:15px}
 .btns{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}

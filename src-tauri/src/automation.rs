@@ -42,6 +42,8 @@ pub struct Store {
     pub devices: Vec<Device>,
     /// The Settings pane shown last ("general" / "automation").
     pub pane: Option<String>,
+    /// Settings › General › Low battery alert, in % (unset: `rules::LOW_BATTERY_DEFAULT`).
+    pub low_battery_pct: Option<u8>,
 }
 
 impl Store {
@@ -418,6 +420,17 @@ impl Automation {
         let mut st = self.st.lock().unwrap();
         st.store.pane = Some(pane.to_owned());
         self.save(&st);
+    }
+    pub fn low_battery_pct(&self) -> u8 {
+        self.st.lock().unwrap().store.low_battery_pct.map_or(crate::rules::LOW_BATTERY_DEFAULT, crate::rules::low_battery_pct)
+    }
+    /// Saves the setting, kept in range; returns the value saved.
+    pub fn set_low_battery_pct(&self, pct: u8) -> u8 {
+        let mut st = self.st.lock().unwrap();
+        let pct = crate::rules::low_battery_pct(pct);
+        st.store.low_battery_pct = Some(pct);
+        self.save(&st);
+        pct
     }
 
     /// The hook: the grid change that sent the notification (never the first reading, never
