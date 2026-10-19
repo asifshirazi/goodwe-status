@@ -4,6 +4,8 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-19
+
 ### Added
 - Today's power cuts as a 24-hour strip at the bottom of the panel's Grid section (the same strip as in Stats; point at a cut, or Tab, then ← →, to read it). Turn it off in Settings › General › Show today's power cuts.
 - An ⓘ at the end of "Usually back around …" opens Settings › Stats on today.
@@ -50,6 +52,7 @@ First release.
 - The panel no longer opens with Settings… highlighted.
 - The Settings window no longer jumps on the first click.
 
-[Unreleased]: https://github.com/asifshirazi/goodwe-status/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/asifshirazi/goodwe-status/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/asifshirazi/goodwe-status/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/asifshirazi/goodwe-status/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/asifshirazi/goodwe-status/releases/tag/v0.1.0
