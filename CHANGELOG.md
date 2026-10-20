@@ -4,6 +4,8 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-20
+
 ### Added
 - Settings › General: a Reduce motion switch. It turns off the opening motion, the pane fade and the window glide.
 - Settings › Automation: a Refresh device list button beside Add Device…, and a status dot before each device.
