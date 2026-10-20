@@ -4,6 +4,8 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-20
+
 ### Added
 - Settings › About: the version, a link to the project on GitHub, and updates. The app looks for a new release on GitHub each time it opens (Check Now looks again). When there is one, the panel's gear and the About tab get a blue dot, and the gear opens About with what's new. Update and Relaunch downloads it, checks its signature, installs it in place and relaunches; nothing downloads before you click. This is the first version that can update itself; from 0.1.x, install it by hand once.
 
@@ -69,7 +71,8 @@ First release.
 - The panel no longer opens with Settings… highlighted.
 - The Settings window no longer jumps on the first click.
 
-[Unreleased]: https://github.com/asifshirazi/goodwe-status/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/asifshirazi/goodwe-status/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/asifshirazi/goodwe-status/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/asifshirazi/goodwe-status/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/asifshirazi/goodwe-status/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/asifshirazi/goodwe-status/releases/tag/v0.1.0

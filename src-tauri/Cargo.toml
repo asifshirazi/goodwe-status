@@ -1,6 +1,6 @@
 [package]
 name = "goodwe-status"
-version = "0.1.2"
+version = "0.2.0"
 description = "Menu bar battery % and grid on/off for GoodWe SEMS stations"
 license = "MIT"
 edition = "2021"
