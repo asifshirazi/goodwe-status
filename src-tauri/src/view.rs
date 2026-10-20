@@ -128,19 +128,20 @@ fn off_lines(m: &Monitor, now: Instant) -> (Option<String>, Option<String>) {
     if !m.history_tried {
         return (None, None); // S1: title only while the first history call runs
     }
-    let start = match m.hist_start {
-        HistStart::Start(_) | HistStart::Stale => m.since_start, // S2/S3, or S6 keeps it
+    match m.hist_start {
         HistStart::AtLeastYesterday => return (Some("Since at least yesterday 12:00\u{a0}AM".into()), None),
         HistStart::AtLeastToday => return (Some("Since at least 12:00\u{a0}AM".into()), None),
-        HistStart::NotOff => None,
-    };
-    let Some(s) = start else { return seen() };
+        HistStart::Start(_) | HistStart::Stale | HistStart::NotOff => {}
+    }
+    // S2/S3, S6 keeps it, or (T-025) the start the live reading saw before history has the cut, or
+    // after a launch mid-cut the first off reading: "Since at least", but the back-on line still shows.
+    let Some((s, known)) = m.cut_start_known() else { return seen() };
     let today = now_min.div_euclid(DAY);
     let back = m
         .past_days_loaded(today)
         .then(|| outages::back_on(&m.outages(today), s, t.0 as f64 / 60.0))
         .flatten();
-    (Some(outages::since_text(s, now_min)), back)
+    (if known { Some(outages::since_text(s, now_min)) } else { seen().0 }, back)
 }
 
 /// Grid on: the next usual cut (spec › Next-cut rule), only with today and the 14 past days loaded.
@@ -406,7 +407,7 @@ mod tests {
     }
     /// The fixture's real series (trimmed windows), day `d` cut at minute `upto` of that day.
     fn sample_day(d: &str, upto: Option<u32>) -> GridDay {
-        let g = crate::sems::parse_grid_day(&fixture()["reply"], day(&format!("{d} 00:00"))).unwrap();
+        let g = crate::sems::parse_grid_day(&fixture()["reply"], day(&format!("{d} 00:00")), false).unwrap();
         match upto {
             Some(u) => GridDay { off: g.off.into_iter().filter(|p| p.0 <= u).collect(), newest: Some(u), ..Default::default() },
             None => g,
@@ -468,6 +469,64 @@ mod tests {
         m.on_reading(reading(&ts("2026-10-18 12:00"), OFF, Some((80.0, 900.0))), now);
         history(&mut m, days_from(&tb, day("2026-10-18 00:00"), at("2026-10-18 12:00")), at("2026-10-18 12:00"));
         assert_eq!(detail(&m, now).as_deref(), Some("Since 11:57\u{a0}AM (3 min)"));
+    }
+
+    #[test]
+    fn live_cut_before_history_has_it() {
+        // T-025, the owner's 9:04 AM: live saw the grid go off, history has no off minute yet (its cut starts 9:07)
+        let tb = table();
+        let (mut m, now) = live(&[("2026-10-18 09:00", ON), ("2026-10-18 09:04", OFF)]);
+        history(&mut m, days_from(&tb, day("2026-10-04 00:00"), at("2026-10-18 09:03")), at("2026-10-18 09:04"));
+        assert_eq!(m.hist_start, HistStart::NotOff);
+        let p = panel(&m, now, false);
+        assert_eq!(p.status.detail.as_deref(), Some("Since 9:04\u{a0}AM (0 min)"));
+        assert_eq!(p.status.back.as_deref(), Some("Usually back around 12:05\u{a0}PM (last 14 days)"));
+        // today already had two cuts (12:00–2:06 AM, 7:06–8:40 AM); the live one is the third
+        let cuts = p.cuts.unwrap();
+        assert_eq!((cuts.strip.cuts[2], cuts.rows.len(), cuts.rows[2].running), ((544, 544), 3, true));
+        assert_eq!((cuts.rows[2].off.as_str(), cuts.rows[2].dur.as_str()), ("9:04\u{a0}AM", "0 min so far"));
+        assert!(cuts.summary.starts_with("So far today: 3 power cuts"), "{}", cuts.summary);
+        assert_eq!(crate::stats::view(&m, now).rows, cuts.rows, "Stats today: the same rows");
+        // 9:10: history's start (9:07–9:10, 3 off minutes) but no outage yet (under 5 min): one row, from 9:07
+        let now = now + Duration::from_secs(6 * 60);
+        m.on_reading(reading(&ts("2026-10-18 09:10"), OFF, Some((80.0, 900.0))), now);
+        history(&mut m, days_from(&tb, day("2026-10-04 00:00"), at("2026-10-18 09:10")), at("2026-10-18 09:10"));
+        let p = panel(&m, now, false);
+        let rows = p.cuts.unwrap().rows;
+        assert_eq!((rows.len(), rows[2].dur.as_str(), p.status.detail.as_deref()), (3, "3 min so far", Some("Since 9:07\u{a0}AM (3 min)")));
+        // 9:12: history's own running cut takes over, no second row
+        let now = now + Duration::from_secs(2 * 60);
+        m.on_reading(reading(&ts("2026-10-18 09:12"), OFF, Some((80.0, 900.0))), now);
+        history(&mut m, days_from(&tb, day("2026-10-04 00:00"), at("2026-10-18 09:12")), at("2026-10-18 09:12"));
+        let p = panel(&m, now, false);
+        let rows = p.cuts.unwrap().rows;
+        assert_eq!((rows.len(), rows[2].off.as_str(), rows[2].running), (3, "9:07\u{a0}AM", true));
+        assert_eq!(p.status.back.as_deref(), Some("Usually back around 12:05\u{a0}PM (last 14 days)"));
+        // grid back: the live cut goes with it
+        let (mut m2, now2) = live(&[("2026-10-18 09:00", ON), ("2026-10-18 09:04", OFF), ("2026-10-18 09:06", ON)]);
+        history(&mut m2, days_from(&tb, day("2026-10-04 00:00"), at("2026-10-18 09:03")), at("2026-10-18 09:06"));
+        assert_eq!(panel(&m2, now2, false).cuts.unwrap().rows.len(), 2);
+        // T-025 reopened, the owner's 9:29 install mid-cut: first reading already off ("at least"); the cut
+        // is still drawn from that reading, with the back-on line, in the strip and in Stats
+        let (mut m, now) = live(&[("2026-10-18 09:29", OFF)]);
+        history(&mut m, days_from(&tb, day("2026-10-04 00:00"), at("2026-10-18 09:03")), at("2026-10-18 09:29"));
+        assert_eq!(m.hist_start, HistStart::Stale, "history stopped at 9:03");
+        let p = panel(&m, now, false);
+        assert_eq!((p.status.detail.as_deref(), p.status.back.as_deref()), (Some("Since at least 9:29\u{a0}AM"), Some("Usually back around 12:05\u{a0}PM (last 14 days)")));
+        let cuts = p.cuts.unwrap();
+        assert_eq!((cuts.rows.len(), cuts.rows[2].off.as_str(), cuts.rows[2].running, cuts.strip.cuts[2]), (3, "9:29\u{a0}AM", true, (569, 569)));
+        assert_eq!(crate::stats::view(&m, now).rows, cuts.rows, "Stats today: the same rows");
+        // 9:35: history catches up (its cut from 9:08) and takes over the start, in one row
+        let now = now + Duration::from_secs(6 * 60);
+        m.on_reading(reading(&ts("2026-10-18 09:35"), OFF, Some((80.0, 900.0))), now);
+        let mut days = days_from(&tb, day("2026-10-04 00:00"), at("2026-10-18 09:03"));
+        let today = days.get_mut(&day("2026-10-18 00:00")).unwrap();
+        today.off.extend((548..=575).map(|m| (m, true)));
+        today.newest = Some(575);
+        history(&mut m, days, at("2026-10-18 09:35"));
+        let p = panel(&m, now, false);
+        let rows = p.cuts.unwrap().rows;
+        assert_eq!((rows.len(), rows[2].off.as_str(), p.status.detail.as_deref()), (3, "9:08\u{a0}AM", Some("Since 9:08\u{a0}AM (27 min)")));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 use crate::clock::LocalTs;
 use crate::monitor::Monitor;
-use crate::outages::{self, DAY};
+use crate::outages::DAY;
 use crate::rules::{self, fmt_duration};
 use serde::Serialize;
 use serde_json::Value;
@@ -247,7 +247,7 @@ fn day_view(m: &Monitor, now: Instant, today_only: bool) -> StatsView {
     };
     let (mut rows, mut cuts, mut total) = (vec![], vec![], 0);
     let (mut at_least, mut midnight, mut edge_pending) = (false, false, false);
-    let outs = outages::outages(&m.history, today);
+    let outs = m.outages(today);
     for o in outs.iter().filter(|o| o.start < d1 && o.end >= d0) {
         let end = if o.running { to.unwrap_or(o.end + 1).max(o.end + 1) } else { o.end + 1 }; // Grid on, or now
         let off_unknown = o.start == d0 && !loaded(d - 1);
@@ -330,7 +330,7 @@ fn day_view(m: &Monitor, now: Instant, today_only: bool) -> StatsView {
 /// The month `month` (its 1st) with `sel` picked; `wd` = the first weekday, 0 = Sunday.
 fn calendar(m: &Monitor, (month, focus): (i64, Option<i64>), sel: i64, first: i64, today: i64, wd: usize) -> Calendar {
     let next = LocalTs::month_start(month, 1);
-    let outs = outages::outages(&m.history, today);
+    let outs = m.outages(today);
     let days = (month..next)
         .map(|x| match m.history.get(&x).filter(|g| g.newest.is_some()) {
             _ if x < first || x > today => "none",
@@ -502,6 +502,7 @@ mod tests {
         assert_eq!(m.stats_day, Some(day("2026-10-18")), "Stats keeps its day");
         // no cuts yet today; loading today; no battery and signed out send none
         let mut m = station(vec![("2026-10-19", grid(&[], 852, vec![]))]);
+        (m.grid, m.off_since) = (crate::rules::GridState::On, None); // the grid on now (an off reading draws a cut, T-025)
         assert_eq!(today(&m, Instant::now()).map(|c| c.summary), Some("So far today: no power cuts.".into()));
         let mut m2 = station(vec![]);
         let c = today(&m2, Instant::now()).unwrap();
@@ -671,6 +672,7 @@ mod tests {
         assert!(a(&mut m, json!({ "id": "today" })) && m.stats_day.is_none());
         // today with no cuts gets its own box line
         m.on_day(day("2026-10-19"), grid(&[], 853, vec![]), day("2026-10-19") * DAY + 854);
+        (m.grid, m.off_since) = (crate::rules::GridState::On, None); // the grid on now
         assert_eq!(show(&mut m, "2026-10-19")["msg"], "No power cuts so far today.");
     }
 }

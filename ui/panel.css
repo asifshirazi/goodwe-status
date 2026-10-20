@@ -172,6 +172,8 @@
 .gw-strip-plot.is-reading .cut:not(.is-on){opacity:.4}
 .gw-strip .gw-tip{top:16px;max-width:220px} /* under the bar, over the hour labels */
 .gw-tip-row i.off{background:var(--gw-red)}
+/* T-025: the strip's other parts; green = grid on (as the status icon), dashes = no readings (as the strip's dashed hours) */
+.gw-tip-row i.on{background:var(--gw-green)} .gw-tip-row i.gap{background:repeating-linear-gradient(90deg,var(--gw-label-2) 0 2px,transparent 2px 4px)}
 @media (forced-colors:active){ .gw-strip .cut{fill:Highlight} .gw-strip-plot:focus-visible{outline-color:Highlight} }
 
 /* ---- T-024 · Footer: Settings · last update · Quit on one 24 pt row ----

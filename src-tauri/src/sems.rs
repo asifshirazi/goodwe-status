@@ -212,17 +212,25 @@ pub fn parse_chart(v: &Value, day: i64) -> Result<ChartSeries, String> {
 }
 
 /// The same reply → the day's grid-off minutes (research rule: pGrid exactly 0 and pBat equal
-/// to pConsum). Joins the three series by `tp`, never by position.
-pub fn parse_grid_day(v: &Value, day: i64) -> Result<GridDay, String> {
+/// to pConsum). Joins the three series by `tp`, never by position. `setup`: `day` is the
+/// station's set-up day, where minutes before the first pGrid point are no data, not off (B-O1).
+pub fn parse_grid_day(v: &Value, day: i64, setup: bool) -> Result<GridDay, String> {
     // A day SEMS+ has nothing for (before set-up, checked live 2026-10-19) answers `dataList: []`.
     if check_plus_code(v).is_ok() && v["data"]["dataList"].as_array().is_some_and(Vec::is_empty) {
         return Ok(GridDay::default());
     }
     let series = plus_series(v, day)?;
-    let (bat, load): (HashMap<u32, f64>, HashMap<u32, f64>) =
-        (series("pBat")?.into_iter().collect(), series("pConsum")?.into_iter().collect());
-    let joined: Vec<(u32, f64, f64, f64)> =
-        series("pGrid")?.into_iter().filter_map(|(m, g)| Some((m, g, *bat.get(&m)?, *load.get(&m)?))).collect();
+    let (grid, load): (HashMap<u32, f64>, HashMap<u32, f64>) =
+        (series("pGrid")?.into_iter().collect(), series("pConsum")?.into_iter().collect());
+    // Live 2026-10-20: through a whole cut SEMS+ sent no pGrid points while pBat and pConsum went on,
+    // so a minute without one counts as 0 and the balance rule decides (before, history stopped at the cut).
+    // Not before the first pGrid point of the set-up day: there the station was not reporting yet.
+    let start = if setup { grid.keys().min().copied().unwrap_or(u32::MAX) } else { 0 };
+    let joined: Vec<(u32, f64, f64, f64)> = series("pBat")?
+        .into_iter()
+        .filter(|&(m, _)| m >= start)
+        .filter_map(|(m, b)| Some((m, grid.get(&m).copied().unwrap_or(0.0), b, *load.get(&m)?)))
+        .collect();
     let mut off: Vec<(u32, bool)> = joined
         .iter()
         .filter(|&&(_, g, b, c)| g == 0.0 && (b - c).abs() < OFF_BALANCE_KW)
@@ -399,11 +407,11 @@ impl Client {
 
     /// A past day's call that owns what it needs, so the caller can let the client go while it
     /// runs (the history walk, T-015 § 4.7). `None`: no SEMS+ session yet; the poll's next day call makes one.
-    pub fn day_detached(&self, date: LocalTs, utc_offset_h: Option<f64>) -> Option<impl Future<Output = Result<Day, SemsError>> + Send + 'static> {
+    pub fn day_detached(&self, date: LocalTs, utc_offset_h: Option<f64>, setup: bool) -> Option<impl Future<Output = Result<Day, SemsError>> + Send + 'static> {
         let (http, s, gate) = (self.http.clone(), self.plus.clone()?, self.gate.clone());
         Some(async move {
             let _one = gate.lock().await;
-            day_call(&http, &s, date, utc_offset_h).await
+            day_call(&http, &s, date, utc_offset_h, setup).await
         })
     }
 
@@ -433,7 +441,7 @@ impl Client {
 
     /// One station-local day from the SEMS+ gateway: today's chart and grid history in one
     /// call, or a past day's grid history (T-002 5a: one call per day, a 6-day range comes back empty).
-    pub async fn day(&mut self, date: LocalTs, utc_offset_h: Option<f64>) -> Result<Day, SemsError> {
+    pub async fn day(&mut self, date: LocalTs, utc_offset_h: Option<f64>, setup: bool) -> Result<Day, SemsError> {
         let gate = self.gate.clone();
         let _one = gate.lock().await;
         for attempt in 0..2 {
@@ -441,7 +449,7 @@ impl Client {
                 let creds = self.creds.clone().ok_or(SemsError::SignedOut)?;
                 self.plus = Some(self.plus_login(&creds).await?);
             }
-            match day_call(&self.http, self.plus.as_ref().expect("set above"), date, utc_offset_h).await {
+            match day_call(&self.http, self.plus.as_ref().expect("set above"), date, utc_offset_h, setup).await {
                 Err(SemsError::Expired) if attempt == 0 => self.plus = None,
                 r => return r,
             }
@@ -503,7 +511,7 @@ impl Client {
 }
 
 /// One station-local day from the SEMS+ gateway with a session in hand (no login, no retry).
-async fn day_call(http: &reqwest::Client, s: &Session, date: LocalTs, utc_offset_h: Option<f64>) -> Result<Day, SemsError> {
+async fn day_call(http: &reqwest::Client, s: &Session, date: LocalTs, utc_offset_h: Option<f64>, setup: bool) -> Result<Day, SemsError> {
     let (day, date) = (date.day(), date.date());
     // timeZone is required (an empty list without it); SEMS+ labels `tp` station-local anyway.
     let tz = utc_offset_h.unwrap_or(0.0).round() as i64;
@@ -515,7 +523,7 @@ async fn day_call(http: &reqwest::Client, s: &Session, date: LocalTs, utc_offset
     // A day's reply is ~488 KB and SEMS+ is slow (10-20 s): 60 s here, the client's 20 s elsewhere (T-012).
     let (v, raw) = post_plus(http, &url, s, body, Some(DAY_TIMEOUT)).await?;
     let bad = |reason: String| SemsError::Parse { reason, reply: raw.clone() };
-    Ok(Day { chart: parse_chart(&v, day).map_err(bad), grid: parse_grid_day(&v, day).map_err(bad) })
+    Ok(Day { chart: parse_chart(&v, day).map_err(bad), grid: parse_grid_day(&v, day, setup).map_err(bad) })
 }
 
 /// A signed SEMS+ call. Maps 401/C0602 to `Expired`, GY0429 to `RateLimited` and any other non-"00000" code to `Parse`.
@@ -599,7 +607,7 @@ mod tests {
             } else if name.starts_with("sems-plus-grid-history") {
                 // The reply sits under `reply`; the rest of the file is the test's outage table.
                 let day = LocalTs::parse("2026-10-18 00:00:00").unwrap().day();
-                let g = parse_grid_day(&v["reply"], day).unwrap_or_else(|e| panic!("{name}: {e}"));
+                let g = parse_grid_day(&v["reply"], day, false).unwrap_or_else(|e| panic!("{name}: {e}"));
                 assert!(!g.off.is_empty(), "{name}: no off minutes");
             } else {
                 panic!("{name}: unknown sample kind; name it monitor-detail-*, sems-plus-power-history-* or sems-plus-grid-history* and add a check");
@@ -636,7 +644,7 @@ mod tests {
     fn grid_history_sample() {
         let v = &sample("sems-plus-grid-history.json")["reply"];
         let d18 = LocalTs::parse("2026-10-18 00:00:00").unwrap().day();
-        let g = parse_grid_day(v, d18).unwrap();
+        let g = parse_grid_day(v, d18, false).unwrap();
         let off: Vec<u32> = g.off.iter().map(|p| p.0).collect();
         let hm = |h: u32, m: u32| h * 60 + m;
         // off from 00:00 (began 10-17 23:33) to 02:05; 09:07 is the first off minute of the morning cut
@@ -646,24 +654,38 @@ mod tests {
         assert!(off.contains(&hm(12, 3)) && !off.contains(&hm(12, 4)) && off.contains(&hm(12, 10)));
         assert_eq!(g.newest, Some(hm(12, 10)));
         assert!(g.off.iter().all(|p| p.1), "the house drew load in every off minute");
-        let g17 = parse_grid_day(v, d18 - 1).unwrap();
+        let g17 = parse_grid_day(v, d18 - 1, false).unwrap();
         assert_eq!(g17.off.first().map(|p| p.0), Some(hm(23, 33)));
-        // null and isCE points are dropped; a minute missing from one series is not joined
+        // null and isCE points are dropped; a minute missing from pBat or pConsum is not joined
         let mut v2 = v.clone();
-        assert_eq!(v2["data"]["dataList"][0]["item"], "pGrid");
-        let i = v2["data"]["dataList"][0]["powerData"].as_array().unwrap().iter().position(|p| p["tp"] == "2026-10-18 09:07:00").unwrap();
-        v2["data"]["dataList"][0]["powerData"][i]["power"] = Value::Null;
-        v2["data"]["dataList"][0]["powerData"][i + 1]["isCE"] = json!(true);
-        let g2 = parse_grid_day(&v2, d18).unwrap();
+        let list = |v: &Value, item: &str| v["data"]["dataList"].as_array().unwrap().iter().position(|s| s["item"] == item).unwrap();
+        let (g, b) = (list(&v2, "pGrid"), list(&v2, "pBat"));
+        let i = v2["data"]["dataList"][b]["powerData"].as_array().unwrap().iter().position(|p| p["tp"] == "2026-10-18 09:07:00").unwrap();
+        v2["data"]["dataList"][b]["powerData"][i]["power"] = Value::Null;
+        v2["data"]["dataList"][b]["powerData"][i + 1]["isCE"] = json!(true);
+        let g2 = parse_grid_day(&v2, d18, false).unwrap();
         assert!(!g2.off.iter().any(|p| p.0 == hm(9, 7) || p.0 == hm(9, 8)));
         assert!(g2.off.iter().any(|p| p.0 == hm(9, 9)));
+        // T-025 (live 2026-10-20): pGrid stops through a cut while pBat and pConsum go on: those minutes are off, and newest moves on
+        let mut v3 = v.clone();
+        v3["data"]["dataList"][g]["powerData"].as_array_mut().unwrap().retain(|p| p["tp"].as_str().unwrap() < "2026-10-18 09:00:00");
+        let g3 = parse_grid_day(&v3, d18, false).unwrap();
+        assert_eq!((g3.off.iter().find(|&&p| p.0 > hm(9, 0)).map(|p| p.0), g3.newest), (Some(hm(9, 7)), Some(hm(12, 10))));
+        assert!(g3.off.iter().any(|p| p.0 == hm(12, 3)) && !g3.off.iter().any(|p| p.0 == hm(12, 4)), "the grid's return still ends it: pBat no longer carries the house");
+        // B-O1: on the set-up day, minutes before the first pGrid point are no data; on any other day they stay off
+        let mut v4 = v.clone();
+        v4["data"]["dataList"][g]["powerData"].as_array_mut().unwrap().retain(|p| p["tp"].as_str().unwrap() >= "2026-10-18 01:00:00");
+        let (setup, other) = (parse_grid_day(&v4, d18, true).unwrap(), parse_grid_day(&v4, d18, false).unwrap());
+        assert_eq!((setup.gaps.first(), setup.off.first().map(|p| p.0)), (Some(&(0, hm(0, 59))), Some(hm(1, 0))));
+        assert_eq!((other.gaps.iter().any(|g| g.0 == 0), other.off.first().map(|p| p.0)), (false, Some(0)), "a cut running past midnight has no pGrid either");
+        assert_eq!(setup.newest, other.newest);
         // a reply without pGrid is unreadable, not "no outages"; an empty list is a day with no data (T-015)
         v2["data"]["dataList"][0]["item"] = json!("x");
-        assert_eq!(parse_grid_day(&v2, d18).unwrap_err(), "field `dataList[item=pGrid]` missing");
+        assert_eq!(parse_grid_day(&v2, d18, false).unwrap_err(), "field `dataList[item=pGrid]` missing");
         v2["data"]["dataList"] = json!([]);
-        assert_eq!(parse_grid_day(&v2, d18), Ok(GridDay::default()));
+        assert_eq!(parse_grid_day(&v2, d18, false), Ok(GridDay::default()));
         v2["code"] = json!("C0001");
-        assert!(parse_grid_day(&v2, d18).is_err());
+        assert!(parse_grid_day(&v2, d18, false).is_err());
     }
 
     #[test]
@@ -729,14 +751,14 @@ mod tests {
     #[test]
     fn gaps_in_a_day() {
         let d18 = LocalTs::parse("2026-10-18 00:00:00").unwrap().day();
-        let gaps = |v: Value| parse_grid_day(&v, d18).unwrap().gaps;
+        let gaps = |v: Value| parse_grid_day(&v, d18, false).unwrap().gaps;
         assert_eq!(gaps(reply_at(0..1440)), vec![], "a full day has none");
         // 06:00-06:09 missing (10 min) is a gap; 07:00-07:04 (5 min) is bridged, like the outage merge gap
         let holes = |m: &u32| !(360..=369).contains(m) && !(420..=424).contains(m);
         assert_eq!(gaps(reply_at((0..1440).filter(holes))), vec![(360, 369)]);
         // readings that start late: a gap from midnight; the minutes after the newest are not one (today, or a tail added when final)
         assert_eq!(gaps(reply_at((60..1000).filter(holes))), vec![(0, 59), (360, 369)]);
-        assert_eq!(parse_grid_day(&reply_at(60..1000), d18).unwrap().newest, Some(999));
+        assert_eq!(parse_grid_day(&reply_at(60..1000), d18, false).unwrap().newest, Some(999));
     }
 
     #[test]
@@ -777,24 +799,24 @@ mod tests {
         c.sign_in(Credentials { account: get("SEMS_ACCOUNT"), password: get("SEMS_PASSWORD") }).await.unwrap_or_else(|e| panic!("{e}")); // Display never shows the reply body
         let r = c.reading().await.unwrap_or_else(|e| panic!("{e}"));
         println!("reading at {} {}: grid {:?} (vac1 {}, status {:?}), battery {:?}", r.time.date(), r.time.hhmm(), r.grid, r.vac1, r.grid_status, r.battery);
-        let d = c.day(r.time, r.utc_offset_h).await.unwrap_or_else(|e| panic!("{e}"));
+        let d = c.day(r.time, r.utc_offset_h, false).await.unwrap_or_else(|e| panic!("{e}"));
         let ch = d.chart.unwrap_or_else(|e| panic!("{e}"));
         println!("chart (timeScale 1): {} points, first {:?}, last {:?}", ch.points.len(), ch.points.first(), ch.points.last());
         // T-002: today's history from the same call, then yesterday as a past-day call.
         let mut days = std::collections::BTreeMap::new();
         days.insert(r.time.day(), d.grid.unwrap_or_else(|e| panic!("{e}")));
         let y = LocalTs((r.time.day() - 1) * 86_400);
-        let yd = c.day(y, r.utc_offset_h).await.unwrap_or_else(|e| panic!("{e}"));
+        let yd = c.day(y, r.utc_offset_h, false).await.unwrap_or_else(|e| panic!("{e}"));
         days.insert(y.day(), yd.grid.unwrap_or_else(|e| panic!("{e}")));
         // T-015: temperatures, the set-up day, and a walk-style call that holds no &mut client.
         println!("temps: inverter {:?} °C ({:?}), battery {:?} °C ({:?}); set up {:?}", r.inverter_c, r.inverter_c.map(crate::rules::fmt_temp), r.battery_c, r.battery_c.map(crate::rules::fmt_temp), r.created.map(|t| (t.date(), t.hhmm())));
         let w = LocalTs((r.time.day() - 2) * 86_400);
-        let wd = c.day_detached(w, r.utc_offset_h).expect("a SEMS+ session after day()").await.unwrap_or_else(|e| panic!("{e}"));
+        let wd = c.day_detached(w, r.utc_offset_h, false).expect("a SEMS+ session after day()").await.unwrap_or_else(|e| panic!("{e}"));
         days.insert(w.day(), wd.grid.unwrap_or_else(|e| panic!("{e}")));
         if let Some(created) = r.created {
-            let first = c.day(created, r.utc_offset_h).await.unwrap_or_else(|e| panic!("{e}")).grid.unwrap_or_else(|e| panic!("{e}"));
+            let first = c.day(created, r.utc_offset_h, true).await.unwrap_or_else(|e| panic!("{e}")).grid.unwrap_or_else(|e| panic!("{e}"));
             println!("first day {}: newest {:?}, gaps {:?}", created.date(), first.newest, first.gaps);
-            let before = c.day(LocalTs((created.day() - 1) * 86_400), r.utc_offset_h).await.unwrap_or_else(|e| panic!("{e}"));
+            let before = c.day(LocalTs((created.day() - 1) * 86_400), r.utc_offset_h, false).await.unwrap_or_else(|e| panic!("{e}"));
             println!("day before set-up: newest {:?} (the walk never asks for it)", before.grid.map(|g| g.newest));
         }
         assert!(c.station().is_some_and(|s| !s.is_empty()));

@@ -176,8 +176,8 @@
   let stripRows = null; // the strip's rows, for bindChart after a render
   // T-023: the whole strip is a button (click, Return, Space) that opens Settings › Stats on today; ← → still read the cuts.
   function stripHTML(cu) {
-    const n = ((cu.strip || {}).cuts || []).length, label = cu.status === 'ok' ? cu.summary : cu.msg, svg = GWStrip.svg(cu.strip, SW);
-    const desc = `${label || ''}${n ? ' Use left and right arrows to read each cut.' : ''}`;
+    const label = cu.status === 'ok' ? cu.summary : cu.msg, svg = GWStrip.svg(cu.strip, SW), n = svg.includes('class="hit"');
+    const desc = `${label || ''}${n ? ' Use left and right arrows to read each part of the day.' : ''}`;
     return `<div class="gw-strip"><div class="gw-strip-plot" tabindex="0" role="button" data-action="stats" aria-label="Show power cuts in Stats" aria-describedby="gw-strip-d">`
       + `${svg}${n ? '<div class="gw-tip" role="status" hidden></div>' : ''}<span id="gw-strip-d" hidden>${esc(desc)}</span></div></div>`;
   }

@@ -101,10 +101,10 @@
   // 5½ rows tall and scrolls inside, the footer keeps two lines, so ← / → never resize the window.
   const DAYW = 494; // strip width: window 560 − body 40 − group border 2 − row padding 24
   function strip(st) {
-    // With cuts, the strip is one focusable read-out (as the panel chart): ← → move from cut to cut and show its tooltip.
-    const n = ((st.strip || {}).cuts || []).length;
-    return `<div class="st-plot"${n ? ` tabindex="0" role="group" aria-label="Power cuts on the day strip. Use left and right arrows to read each cut."` : ''}>`
-      + `${GWStrip.svg(st.strip, DAYW)}${n ? '<div class="st-tip" role="status" hidden></div>' : ''}</div>`;
+    // With a part to read, the strip is one focusable read-out (as the panel chart): ← → move from part to part (T-025).
+    const svg = GWStrip.svg(st.strip, DAYW), n = svg.includes('class="hit"');
+    return `<div class="st-plot"${n ? ` tabindex="0" role="group" aria-label="Power cuts on the day strip. Use left and right arrows to read each part of the day."` : ''}>`
+      + `${svg}${n ? '<div class="st-tip" role="status" hidden></div>' : ''}</div>`;
   }
   // A cell that isn't a clock time (Before midnight, After midnight, No readings) is muted: unknown, not measured.
   const cell = (day, t, unknown) => unknown ? `<span><em>${esc(t)}</em></span>` : day ? `<span><em>${esc(day)}</em> ${esc(t)}</span>` : `<span>${esc(t)}</span>`;

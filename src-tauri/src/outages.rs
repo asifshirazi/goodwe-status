@@ -12,7 +12,7 @@ pub const DAY: i64 = 1440;
 pub const PAST_DAYS: i64 = 14;
 /// Off minutes merge when the next one comes at most this many minutes after the last (flicker,
 /// gaps in the series). The research table keeps 13:11 and 13:17 apart: 6 is not merged.
-const MERGE_GAP: i64 = 5;
+pub const MERGE_GAP: i64 = 5;
 /// A run shorter than this is not an outage.
 const MIN_OUTAGE: i64 = 5;
 /// "Off now" needs this many consecutive off minutes (a lone zero minute is not a cut).

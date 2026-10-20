@@ -8,7 +8,7 @@
   /* new */ --link:#0068DA; --group:rgba(255,255,255,.62); --group-edge:rgba(0,0,0,.07); --separator:rgba(0,0,0,.08);
   --toolbar:#E6E6E6; --tab-selected:rgba(0,0,0,.08); --tab-label:rgba(0,0,0,.60); --tab-icon-selected:#0063E1; --popup-placeholder:rgba(0,0,0,.55); --control-shadow:0 0 0 .5px rgba(0,0,0,.15),0 1px 1px rgba(0,0,0,.06); --fill-hover:rgba(0,0,0,.07); --switch-off:rgba(0,0,0,.10); --switch-edge:rgba(0,0,0,.45); --knob:#FFFFFF; --knob-edge:rgba(0,0,0,.22);
   --press:150ms; --ease-out:cubic-bezier(.23,1,.32,1);
-  /* T-015 */ --tip-bg:rgba(255,255,255,.97); --tip-edge:rgba(0,0,0,.10); --tip-shadow:0 4px 12px rgba(0,0,0,.18),0 1px 3px rgba(0,0,0,.12); --grid-off:#D70015; --track:rgba(0,0,0,.07); --popover:#FFFFFF; --cal-sel:#0063E1;
+  /* T-015 */ --tip-bg:rgba(255,255,255,.97); --tip-edge:rgba(0,0,0,.10); --tip-shadow:0 4px 12px rgba(0,0,0,.18),0 1px 3px rgba(0,0,0,.12); --grid-off:#D70015; --grid-on:#248A3D; /* T-025: panel.css --gw-green */ --track:rgba(0,0,0,.07); --popover:#FFFFFF; --cal-sel:#0063E1;
   --popover-shadow:0 0 0 .5px rgba(0,0,0,.18),0 8px 24px rgba(0,0,0,.16),0 2px 6px rgba(0,0,0,.08);
 }
 @media (prefers-color-scheme: dark){
@@ -17,7 +17,7 @@
     --error-text:#FF7F78; --window:#2A2A2A; --field:rgba(255,255,255,.06); --field-edge:rgba(255,255,255,.14); --button:rgba(255,255,255,.14);
     --link:#5CACFF; --group:rgba(255,255,255,.05); --group-edge:rgba(255,255,255,.08); --separator:rgba(255,255,255,.09);
     --toolbar:#323232; --tab-selected:rgba(255,255,255,.12); --tab-label:rgba(255,255,255,.60); --tab-icon-selected:#5CACFF; --popup-placeholder:rgba(255,255,255,.85); --control-shadow:0 0 0 .5px rgba(255,255,255,.14),0 1px 1px rgba(0,0,0,.30); --fill-hover:rgba(255,255,255,.10); --switch-off:rgba(255,255,255,.16); --switch-edge:rgba(255,255,255,.40); --knob-edge:rgba(0,0,0,.35);
-    /* T-015 */ --tip-bg:rgba(58,58,60,.97); --tip-edge:rgba(255,255,255,.14); --tip-shadow:0 4px 12px rgba(0,0,0,.45),0 1px 3px rgba(0,0,0,.35); --grid-off:#FF6961; --track:rgba(255,255,255,.09); --popover:#353535; --cal-sel:#0071E3;
+    /* T-015 */ --tip-bg:rgba(58,58,60,.97); --tip-edge:rgba(255,255,255,.14); --tip-shadow:0 4px 12px rgba(0,0,0,.45),0 1px 3px rgba(0,0,0,.35); --grid-off:#FF6961; --grid-on:#30D158; --track:rgba(255,255,255,.09); --popover:#353535; --cal-sel:#0071E3;
     --popover-shadow:0 0 0 .5px rgba(255,255,255,.16),0 8px 24px rgba(0,0,0,.50),0 2px 6px rgba(0,0,0,.30);
   }
 }
@@ -133,6 +133,7 @@ h2.first{margin-top:0}
 .st-tip-time{font-size:11px;line-height:14px;color:var(--label-2);margin-bottom:4px !important;font-variant-numeric:tabular-nums}
 .st-tip-row{display:flex;align-items:center;gap:4px}
 .st-tip-row i{flex:none;width:8px;height:2px;border-radius:1px;background:var(--grid-off)}
+.st-tip-row i.on{background:var(--grid-on)} .st-tip-row i.gap{background:repeating-linear-gradient(90deg,var(--label-2) 0 2px,transparent 2px 4px)} /* T-025 */
 .st-tip-row span{flex:1;color:var(--label-2)} .st-tip-row b{font-weight:600;margin-left:8px}
 .st-rows .st-tr.is-on{background:var(--fill-hover)}
 .st-rows .st-tr.is-on::before,.st-rows .st-tr.is-on+.st-tr::before{opacity:0}

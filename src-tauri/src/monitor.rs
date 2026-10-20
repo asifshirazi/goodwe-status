@@ -19,10 +19,11 @@ pub trait Source: Send {
     fn sign_out(&mut self);
     fn reading(&mut self) -> impl Future<Output = Result<Reading, SemsError>> + Send;
     /// One station-local day: today's chart and grid history, or a past day's history.
-    fn day(&mut self, date: LocalTs, utc_offset_h: Option<f64>) -> impl Future<Output = Result<Day, SemsError>> + Send;
+    /// `setup`: the station's set-up day (`sems::parse_grid_day`).
+    fn day(&mut self, date: LocalTs, utc_offset_h: Option<f64>, setup: bool) -> impl Future<Output = Result<Day, SemsError>> + Send;
     /// The history walk's past-day call: started while holding the source, run after letting it
     /// go (T-015 § 4.7). It still waits for any other SEMS+ day call. `None`: no session yet.
-    fn day_detached(&mut self, date: LocalTs, utc_offset_h: Option<f64>) -> Option<impl Future<Output = Result<Day, SemsError>> + Send + 'static>;
+    fn day_detached(&mut self, date: LocalTs, utc_offset_h: Option<f64>, setup: bool) -> Option<impl Future<Output = Result<Day, SemsError>> + Send + 'static>;
     /// The walk saw the SEMS+ session expire: the poll's next day call signs in again.
     fn plus_expired(&mut self);
     /// The signed-in station's id. Never logged.
@@ -39,11 +40,11 @@ impl Source for sems::Client {
     async fn reading(&mut self) -> Result<Reading, SemsError> {
         sems::Client::reading(self).await
     }
-    async fn day(&mut self, date: LocalTs, utc_offset_h: Option<f64>) -> Result<Day, SemsError> {
-        sems::Client::day(self, date, utc_offset_h).await
+    async fn day(&mut self, date: LocalTs, utc_offset_h: Option<f64>, setup: bool) -> Result<Day, SemsError> {
+        sems::Client::day(self, date, utc_offset_h, setup).await
     }
-    fn day_detached(&mut self, date: LocalTs, utc_offset_h: Option<f64>) -> Option<impl Future<Output = Result<Day, SemsError>> + Send + 'static> {
-        sems::Client::day_detached(self, date, utc_offset_h)
+    fn day_detached(&mut self, date: LocalTs, utc_offset_h: Option<f64>, setup: bool) -> Option<impl Future<Output = Result<Day, SemsError>> + Send + 'static> {
+        sems::Client::day_detached(self, date, utc_offset_h, setup)
     }
     fn plus_expired(&mut self) {
         sems::Client::plus_expired(self)
@@ -91,7 +92,14 @@ pub struct Walk {
 struct HistoryFile {
     station: Option<String>,
     days: BTreeMap<i64, FileDay>,
+    /// 2: days were read with pGrid's missing minutes (T-025). Below 2, a day with a gap is fetched once more.
+    /// 3: the set-up day starts at its first pGrid point (T-025 B-O1). Below 3, that day is fetched again.
+    #[serde(default)]
+    version: u8,
 }
+
+/// `HistoryFile::version` this build writes.
+const HISTORY_VERSION: u8 = 3;
 
 #[derive(Serialize, Deserialize)]
 struct FileDay {
@@ -102,6 +110,9 @@ struct FileDay {
     /// Launches that got an empty answer for this day (D-O11).
     #[serde(default, skip_serializing_if = "is_zero")]
     empty: u8,
+    /// Saved by an older parser and still to be fetched once more (kept in the file until then).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    refetch: bool,
 }
 
 fn is_zero(n: &u8) -> bool {
@@ -172,6 +183,10 @@ pub struct Monitor {
     empty_tried: BTreeSet<i64>,
     /// Days read from v0.1.0's file (no gap data): fetched once more, the new answer replaces them.
     history_migrated: BTreeSet<i64>,
+    /// Days with a gap saved before T-025's parser fix (SEMS+ left pGrid out through cuts, so the
+    /// cuts were saved as gaps): shown, not final, fetched once more; the answer with fewer gap
+    /// minutes wins (`on_day`).
+    history_refetch: BTreeSet<i64>,
     /// The station the history belongs to (classic login; the file's `station`). Never logged.
     station: Option<String>,
     /// The day Stats shows (None: today); the walk fetches it and its neighbours first (§ 4.8).
@@ -229,6 +244,7 @@ impl Monitor {
             history_empty: BTreeMap::new(),
             empty_tried: BTreeSet::new(),
             history_migrated: BTreeSet::new(),
+            history_refetch: BTreeSet::new(),
             station: None,
             stats_day: None,
             stats_cal: None,
@@ -275,8 +291,16 @@ impl Monitor {
     pub fn load_history(&mut self, path: PathBuf) -> bool {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let mut unreadable = false;
-        let (station, days): (Option<String>, Vec<(i64, GridDay, u8)>) = match serde_json::from_str::<HistoryFile>(&text) {
-            Ok(f) => (f.station, f.days.into_iter().map(|(d, x)| (d, GridDay::from_runs(&x.runs, x.gaps, x.newest), x.empty)).collect()),
+        let (station, days, old) = match serde_json::from_str::<HistoryFile>(&text) {
+            Ok(f) => {
+                let mut days = f.days;
+                // Below 3: the oldest day, if it opens with a gap, is the set-up day read with false
+                // off minutes. Dropped, so the walk fetches it anew (refetch would keep the old one).
+                if f.version < 3 && days.first_key_value().is_some_and(|(_, x)| x.gaps.first().is_some_and(|g| g.0 == 0)) {
+                    days.pop_first();
+                }
+                (f.station, days, f.version < 2)
+            }
             Err(_) => {
                 // v0.1.0's bare {day: {off, newest}} map (T-015 § 4.2): no gap data, so its days
                 // stay shown but not final, and the walk fetches each once more (B-O1).
@@ -288,13 +312,17 @@ impl Monitor {
                 for (d, g) in old {
                     self.history.insert(d, g);
                 }
-                (None, vec![])
+                (None, BTreeMap::new(), false)
             }
         };
-        for (d, g, empty) in days {
+        for (d, x) in days {
+            let (empty, refetch) = (x.empty, x.refetch || (old && !x.gaps.is_empty()));
+            let g = GridDay::from_runs(&x.runs, x.gaps, x.newest);
             // An empty answer is final only after EMPTY_LAUNCHES launches (D-O11), and a day kept
             // with data over an empty answer is fetched again.
-            if (g.newest.is_some() && empty == 0) || empty >= EMPTY_LAUNCHES {
+            if refetch {
+                self.history_refetch.insert(d);
+            } else if (g.newest.is_some() && empty == 0) || empty >= EMPTY_LAUNCHES {
                 self.history_final.insert(d);
             }
             if empty > 0 {
@@ -314,10 +342,13 @@ impl Monitor {
         let days = self
             .history
             .iter()
-            .filter(|(d, _)| self.history_final.contains(d) || self.history_empty.contains_key(d))
-            .map(|(d, g)| (*d, FileDay { runs: g.to_runs(), gaps: g.gaps.clone(), newest: g.newest, empty: self.history_empty.get(d).copied().unwrap_or(0) }))
+            .filter(|(d, _)| self.history_final.contains(d) || self.history_empty.contains_key(d) || self.history_refetch.contains(d))
+            .map(|(d, g)| {
+                let (empty, refetch) = (self.history_empty.get(d).copied().unwrap_or(0), self.history_refetch.contains(d));
+                (*d, FileDay { runs: g.to_runs(), gaps: g.gaps.clone(), newest: g.newest, empty, refetch })
+            })
             .collect();
-        let file = HistoryFile { station: self.station.clone(), days };
+        let file = HistoryFile { station: self.station.clone(), days, version: HISTORY_VERSION };
         let tmp = path.with_extension("tmp");
         let ok = path.parent().is_none_or(|d| std::fs::create_dir_all(d).is_ok())
             && std::fs::write(&tmp, serde_json::to_string(&file).expect("history serialises")).is_ok();
@@ -446,6 +477,7 @@ impl Monitor {
                 *n += 1;
                 if *n >= EMPTY_LAUNCHES {
                     self.history_final.insert(day);
+                    self.history_refetch.remove(&day);
                 }
                 self.history_unsaved = true;
             }
@@ -467,6 +499,7 @@ impl Monitor {
             }
             self.history_final.insert(day);
             self.history_empty.remove(&day);
+            self.history_refetch.remove(&day);
             self.history_unsaved = true;
         }
         self.history.insert(day, grid);
@@ -524,6 +557,7 @@ impl Monitor {
         self.history_empty.clear();
         self.empty_tried.clear();
         self.history_migrated.clear();
+        self.history_refetch.clear();
         (self.station, self.stats_day, self.stats_cal, self.walk) = (None, None, None, Walk::default());
         (self.history_tried, self.hist_start, self.since_start) = (false, HistStart::Stale, None);
     }
@@ -538,8 +572,35 @@ impl Monitor {
         (today - PAST_DAYS..today).all(|d| self.history.get(&d).is_some_and(|g| g.newest.is_some()))
     }
 
+    /// The current cut's start while the grid is off: history's (Since S2/S3/S6), else the minute the
+    /// live reading saw it begin (T-025: history needs 3 off minutes first, so for a poll or two
+    /// the cut is only in `off_since`), else the first off reading after a launch mid-cut: the
+    /// earliest off time known ("Since at least"), so the cut is still drawn (T-025 reopened).
+    /// The flag: false for that "at least" start.
+    pub fn cut_start_known(&self) -> Option<(i64, bool)> {
+        let hist = matches!(self.hist_start, HistStart::Start(_) | HistStart::Stale).then_some(self.since_start).flatten();
+        hist.map(|s| (s, true)).or(self.off_since.map(|o| (o.at.0.div_euclid(60), o.exact)))
+    }
+
+    pub fn cut_start(&self) -> Option<i64> {
+        self.cut_start_known().map(|s| s.0)
+    }
+
+    /// History's outages, plus the current cut until history holds it as one (a 5-minute run).
     pub fn outages(&self, today: i64) -> Vec<Outage> {
-        outages::outages(&self.history, today)
+        let mut v = outages::outages(&self.history, today);
+        if let (GridState::Off, Some(s), Some(r)) = (self.grid, self.cut_start(), &self.last) {
+            let now = r.time.0.div_euclid(60);
+            // The last off minute before the reading (s − 1 at the first one), so a row ends at now: "0 min so far".
+            let end = now - 1;
+            match v.last_mut() {
+                Some(l) if l.running => {}
+                // history will merge them too (MERGE_GAP), so one row now and no jump later
+                Some(l) if s - l.end <= outages::MERGE_GAP => (l.end, l.running) = (end.max(l.end), true),
+                _ => v.push(Outage { start: s, end, running: true }),
+            }
+        }
+        v
     }
 
     pub fn has_today(&self, today: i64) -> bool {
@@ -638,7 +699,7 @@ pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monit
     if r.grid == GridSignal::Disagree {
         rep.disagreement = Some(format!("vac1 {} V, grid_conn_status {:?}", r.vac1, r.grid_status));
     }
-    let (has_battery, offset) = (r.battery.is_some(), r.utc_offset_h);
+    let (has_battery, offset, first) = (r.battery.is_some(), r.utc_offset_h, r.created.map(LocalTs::day));
     let today = {
         let Some(mut m) = current() else { return rep };
         m.set_station(src.station());
@@ -650,7 +711,7 @@ pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monit
     if let (true, Some(today)) = (has_battery, today) {
         let now = today.0.div_euclid(60);
         // Today: chart and history are one call, so no extra request.
-        let (chart, grid) = match src.day(today, offset).await {
+        let (chart, grid) = match src.day(today, offset, first == Some(today.day())).await {
             Ok(d) => {
                 let chart = d.chart.map_err(|e| failed(&mut rep, "chart", e)).ok();
                 (chart, d.grid.map_err(|e| failed(&mut rep, &format!("history {}", today.date()), e)).ok())
@@ -673,9 +734,9 @@ pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monit
         // session problem stops this poll's history.
         for d in todo {
             let date = LocalTs(d * 86_400);
-            let mut got = src.day(date, offset).await.and_then(|x| x.grid);
+            let mut got = src.day(date, offset, first == Some(d)).await.and_then(|x| x.grid);
             if matches!(got, Err(SemsError::Network(_))) {
-                got = src.day(date, offset).await.and_then(|x| x.grid);
+                got = src.day(date, offset, first == Some(d)).await.and_then(|x| x.grid);
             }
             match got {
                 Ok(g) => match current() {
@@ -722,7 +783,7 @@ pub async fn walk<S: Source>(src: Arc<tokio::sync::Mutex<S>>, mon: Arc<Mutex<Mon
             let mut m = mon.lock().unwrap();
             let (gen, offset) = (m.gen, m.last.as_ref().and_then(|r| r.utc_offset_h));
             let now = m.station_now(Instant::now()).map(|t| t.0.div_euclid(60));
-            now.and_then(|now| m.walk_next(now)).and_then(|d| Some((d, gen, s.day_detached(LocalTs(d * 86_400), offset)?)))
+            now.and_then(|now| m.walk_next(now)).and_then(|d| Some((d, gen, s.day_detached(LocalTs(d * 86_400), offset, m.first_day() == Some(d))?)))
         };
         let Some((d, gen, call)) = job else {
             if std::mem::take(&mut busy) {
@@ -964,7 +1025,7 @@ mod tests {
         fn sign_out(&mut self) {
             self.signed_in = false;
         }
-        fn day_detached(&mut self, date: LocalTs, _: Option<f64>) -> Option<impl Future<Output = Result<Day, SemsError>> + Send + 'static> {
+        fn day_detached(&mut self, date: LocalTs, _: Option<f64>, _: bool) -> Option<impl Future<Output = Result<Day, SemsError>> + Send + 'static> {
             let d = date.day();
             self.days.lock().unwrap().push(d);
             let fail = self.fail.iter().position(|x| x.0 == d).map(|i| self.fail.remove(i).1);
@@ -999,7 +1060,7 @@ mod tests {
             }
             r
         }
-        async fn day(&mut self, date: LocalTs, _: Option<f64>) -> Result<Day, SemsError> {
+        async fn day(&mut self, date: LocalTs, _: Option<f64>, _: bool) -> Result<Day, SemsError> {
             let d = date.day();
             self.days.lock().unwrap().push(d);
             let gate = self.plus_gate.clone();
@@ -1196,6 +1257,59 @@ mod tests {
     }
 
     /// Signed in to "station-a" with a reading at `at` (station set up 2026-09-18 18:28).
+    #[test]
+    fn days_saved_with_cut_gaps_are_fetched_once_more() {
+        // T-025 (live 2026-10-19/20): SEMS+ left pGrid out through cuts, so the old parser saved those cuts as gaps
+        let p = tmp("refetch");
+        let (d, now) = (day_of("2026-10-19 00:00"), day_of("2026-10-21 00:00") * DAY + 600);
+        std::fs::write(&p, format!(r#"{{"station":"station-a","days":{{"{d}":{{"runs":[],"gaps":[[817,991]],"newest":1439}},"{}":{{"runs":[[0,60,true]],"newest":1439}}}}}}"#, d - 1)).unwrap();
+        let launch = || {
+            let mut m = ready("2026-10-21 10:00");
+            m.load_history(p.clone());
+            m
+        };
+        let mut m = launch();
+        assert!(m.history.contains_key(&d) && !m.history_final.contains(&d), "shown meanwhile, not final");
+        assert!(m.history_final.contains(&(d - 1)), "a day without a gap stays final");
+        let f = m.days_to_fetch(now);
+        assert!(f.contains(&d) && !f.contains(&(d - 1)), "{f:?}");
+        m.history_unsaved = true;
+        m.after_history(now); // a save before the refetch keeps the day and its flag
+        let mut m = launch();
+        assert!(m.days_to_fetch(now).contains(&d), "still to fetch after a relaunch");
+        let cut = GridDay { off: (817..=991).map(|x| (x, true)).collect(), newest: Some(1439), ..Default::default() };
+        m.on_day(d, cut.clone(), now);
+        m.after_history(now);
+        assert_eq!(m.history.get(&d), Some(&cut), "the answer with fewer gap minutes wins");
+        let m = launch();
+        assert!(m.history_final.contains(&d) && !m.days_to_fetch(now).contains(&d), "fetched once only");
+        assert_eq!(m.history.get(&d), Some(&cut));
+    }
+
+    #[test]
+    fn set_up_day_saved_before_v3_is_fetched_anew() {
+        // B-O1: v2 read the set-up day's minutes before its first pGrid point as off; the oldest day opening with a gap goes
+        let p = tmp("setup-v3");
+        let (d, now) = (day_of("2026-09-18 00:00"), day_of("2026-10-21 00:00") * DAY + 600);
+        let file = |v: u8| format!(r#"{{"version":{v},"station":"station-a","days":{{"{d}":{{"runs":[[942,1017,true]],"gaps":[[0,941]],"newest":1439}},"{}":{{"runs":[],"gaps":[[817,991]],"newest":1439}}}}}}"#, d + 1);
+        let launch = || {
+            let mut m = ready("2026-10-21 10:00");
+            m.load_history(p.clone());
+            m
+        };
+        std::fs::write(&p, file(2)).unwrap();
+        let mut m = launch();
+        assert!(!m.history.contains_key(&d) && m.wants(d, now), "dropped, so the walk fetches it");
+        assert!(m.history_final.contains(&(d + 1)), "a v2 day with a gap is not fetched again");
+        let fresh = GridDay { off: (1008..=1017).map(|x| (x, true)).collect(), gaps: vec![(0, 1007)], newest: Some(1439) };
+        m.on_day(d, fresh.clone(), now);
+        m.after_history(now);
+        let m = launch();
+        assert_eq!((m.history.get(&d), m.history_final.contains(&d)), (Some(&fresh), true), "saved as v3, kept");
+        std::fs::write(&p, file(3)).unwrap();
+        assert!(launch().history_final.contains(&d), "a v3 file keeps its oldest day");
+    }
+
     fn ready(at: &str) -> Monitor {
         let mut m = Monitor::new(true);
         m.set_station(Some("station-a".into()));

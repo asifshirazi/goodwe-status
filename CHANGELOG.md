@@ -9,8 +9,11 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 - The panel's power-cut strip is now the way into Stats: click it (or Tab to it and press Return or Space) to open Settings › Stats on today. The ⓘ after "Usually back around" is gone.
 - "Usually back around …" stays once its time has passed while the grid is still off, so you can see the grid is later than usual; it goes when the grid comes back. Before, it disappeared or jumped to a later time.
 - Settings › Automation also says what turning a device on does while the grid is on ("The grid is on now: turning a device on sets its Grid on choice."), not only while it is off.
+- Every part of the power-cut strip (in the panel and in Stats) now has a card like the red cuts: point at it, or Tab, then ← →, to see when the grid was on, or when SEMS had no data, with the times and how long. The hours after now have none.
 
 ### Fixed
+- Power cuts show again in the panel and in Stats. Since 19 October SEMS sends no grid reading during a cut, so the app saw no cut and history looked stuck; it now reads cuts without that reading, and fetches days saved without their cuts once more. A cut is also drawn when the app starts while the grid is already off.
+- When the grid goes off, "Usually back around …" shows at once, and the cut shows on the strip and in Stats › today. Before, all three waited a few minutes until the inverter's minute history had the cut.
 - Device automation: a change in Settings › Automation now reaches the device at once while the grid is on too. Turning a device on, adding it, or changing its Grid on choice sets it right away (before, only grid-off changes did, so testing with the grid on looked like nothing worked).
 
 ## [0.1.2] - 2026-10-19
