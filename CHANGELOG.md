@@ -4,6 +4,9 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ## [Unreleased]
 
+### Fixed
+- Device automation: a change in Settings › Automation now reaches the device at once while the grid is on too. Turning a device on, adding it, or changing its Grid on choice sets it right away (before, only grid-off changes did, so testing with the grid on looked like nothing worked).
+
 ## [0.1.2] - 2026-10-19
 
 ### Added

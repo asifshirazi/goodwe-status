@@ -41,7 +41,7 @@ Set each Tuya device's **Grid off** and **Grid on** choice (a light's mode or po
 2. In the project, **Service API**: make sure **IoT Core** and **Authorization Token Management** are subscribed.
 3. **Devices › Link App Account › Add App Account**, then scan the QR code in the Smart Life app (**Me**, scan icon) with **Read and write** permission. Your devices appear in the project.
 4. **Overview**: copy the **Access ID** and **Access Secret**.
-5. In GoodWe Status: **Settings… › Automation**, paste them, pick the data center, **Connect**. Then **Add Device…** and set each device's choices and delay. Turn a device's switch off to leave it alone.
+5. In GoodWe Status: **Settings… › Automation**, paste them, pick the data center, **Connect**. Then **Add Device…** and set each device's choices and delay. Turn a device's switch off to leave it alone. A change you make (a device turned on or added, or the choice for the grid's state now) is sent at once.
 6. The free IoT Core plan lasts about 6 months: renew it under **Cloud › My Services › Extend trial period** (free so far, per users; usually approved within a working day). While it is expired, Settings says so and devices don't change. Trial limits: 26 000 calls a month and 10 devices, far more than this needs (a call per device per grid change).
 
 The keys stay in your Keychain; the device list stays in the app's settings file, never in the repo or the log. Failures show only in Settings, never in the panel or the alert.

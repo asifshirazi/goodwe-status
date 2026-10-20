@@ -76,14 +76,19 @@ pub fn run() {
                     automation::Hooks {
                         changed: Box::new(move || settings::refresh(&h)),
                         log: Box::new(move |s| logdir::line(&d, s)),
-                        off_now: Box::new(move || {
+                        grid_now: Box::new(move || {
                             let m = m.lock().unwrap();
                             let now = std::time::Instant::now();
-                            if m.grid != rules::GridState::Off || m.stale(now) {
+                            if m.stale(now) {
                                 return None;
                             }
                             let at = m.station_now(now)?;
-                            Some(automation::OffNow { at, off_for_s: m.off_since.map_or(0, |o| at.0 - o.at.0) })
+                            match m.grid {
+                                rules::GridState::Off => Some(automation::GridNow { which: automation::Which::Off, at, for_s: m.off_since.map_or(0, |o| at.0 - o.at.0) }),
+                                // shortcut: no "on since" is kept, so a Settings change while the grid is on skips the delay; keep one if a just-returned grid matters.
+                                rules::GridState::On => Some(automation::GridNow { which: automation::Which::On, at, for_s: i64::MAX }),
+                                rules::GridState::Unknown => None,
+                            }
                         }),
                     },
                 )

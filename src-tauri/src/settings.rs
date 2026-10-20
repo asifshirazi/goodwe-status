@@ -394,16 +394,16 @@ mod tests {
         assert_eq!((title("general"), title("automation"), title("stats")), ("General", "Automation", "Stats"));
         // The pane is saved with the settings file (automation::settings_file_has_no_secret round-trips it).
         let p = std::env::temp_dir().join(format!("gw-pane-{}.json", std::process::id()));
-        let auto = Automation::new(Some(p.clone()), crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), off_now: Box::new(|| None) });
+        let auto = Automation::new(Some(p.clone()), crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), grid_now: Box::new(|| None) });
         auto.set_pane("automation");
-        let again = Automation::new(Some(p.clone()), crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), off_now: Box::new(|| None) });
+        let again = Automation::new(Some(p.clone()), crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), grid_now: Box::new(|| None) });
         assert_eq!(pane(again.pane().as_deref()), "automation");
         let _ = std::fs::remove_file(p);
     }
 
     #[test]
     fn low_battery_setting_saved_and_kept_in_range() {
-        let hooks = || crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), off_now: Box::new(|| None) };
+        let hooks = || crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), grid_now: Box::new(|| None) };
         let p = std::env::temp_dir().join(format!("gw-low-{}.json", std::process::id()));
         // A settings file from before T-008 (no field): the default.
         std::fs::write(&p, r#"{"devices":[],"pane":"general"}"#).unwrap();
@@ -459,7 +459,7 @@ mod tests {
 
     #[test]
     fn settings_state_shape() {
-        let auto = Automation::new(None, crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), off_now: Box::new(|| None) });
+        let auto = Automation::new(None, crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), grid_now: Box::new(|| None) });
         let s = State {
             pane: "general",
             account: account(&Monitor::new(false)),

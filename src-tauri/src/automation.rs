@@ -81,11 +81,12 @@ pub enum Problem {
     PlanExpired,
 }
 
-/// The grid is off now (live, not stale): the station's time and how long it has been off.
+/// The grid now (live, known, not stale): which state, the station's time and how long it has been in it.
 #[derive(Debug, Clone, Copy)]
-pub struct OffNow {
+pub struct GridNow {
+    pub which: Which,
     pub at: LocalTs,
-    pub off_for_s: i64,
+    pub for_s: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -143,8 +144,8 @@ pub struct Hooks {
     pub changed: Box<dyn Fn() + Send + Sync>,
     /// One log line (never ids, names or keys).
     pub log: Box<dyn Fn(&str) + Send + Sync>,
-    /// Some while the grid is off now (live Off, not stale).
-    pub off_now: Box<dyn Fn() -> Option<OffNow> + Send + Sync>,
+    /// Some while the grid is known now (live On or Off, not stale).
+    pub grid_now: Box<dyn Fn() -> Option<GridNow> + Send + Sync>,
 }
 
 pub struct Automation {
@@ -170,10 +171,10 @@ fn defaults(c: &[Action]) -> Option<(Action, Action)> {
     c.first().map(|a| (a.clone(), a.clone()))
 }
 
-/// Act right now (the grid is off already)? Only while the grid is off now, the switch is on,
-/// and for the switch itself, a new device or a Grid off change (never a Grid on change).
-pub fn set_now(off_now: bool, on: bool, which: Which) -> bool {
-    off_now && on && which == Which::Off
+/// Act right now? Only while the switch is on and the change is for the grid's state now
+/// (T-021: a Grid on change acts at once while the grid is on, as a Grid off one does while it is off).
+pub fn set_now(now: Option<Which>, on: bool, which: Which) -> bool {
+    on && now == Some(which)
 }
 
 /// What is left of a device's delay when the grid has been off for `off_for_s` already.
@@ -563,17 +564,18 @@ impl Automation {
         (self.hooks.changed)();
     }
 
-    /// A device's switch. Turning it on while the grid is off now gives it its grid-off action, after
-    /// what is left of its delay; turning it off drops its change still waiting (one in flight finishes).
+    /// A device's switch. Turning it on gives it the action for the grid's state now, after what is
+    /// left of its delay; turning it off drops its change still waiting (one in flight finishes).
     pub fn set_on(self: &Arc<Self>, device: usize, on: bool) {
-        let off_now = (self.hooks.off_now)();
+        let now = (self.hooks.grid_now)();
         let mut st = self.st.lock().unwrap();
         let Some(d) = st.store.devices.get_mut(device) else { return };
         d.enabled = on;
-        let (id, off, delay) = (d.id.clone(), d.off.clone(), d.delay_s);
+        let (id, delay) = (d.id.clone(), d.delay_s);
+        let action = now.map(|n| if n.which == Which::Off { d.off.clone() } else { d.on.clone() });
         self.save(&st);
-        if let (Some(o), true, true) = (off_now, on, st.runs()) {
-            self.send(&mut st, &id, off, o.at, delay_left(delay, o.off_for_s), None);
+        if let (Some(n), Some(a), true, true) = (now, action, on, st.runs()) {
+            self.send(&mut st, &id, a, n.at, delay_left(delay, n.for_s), None);
         }
         if let Some(r) = st.run.get_mut(&id).filter(|r| !on && r.waiting.is_some()) {
             r.gen += 1;
@@ -588,7 +590,7 @@ impl Automation {
 
     /// A device's Grid off / Grid on choice: `choice` is a position in its choices.
     pub fn set_action(self: &Arc<Self>, device: usize, which: Which, choice: usize) {
-        let off_now = (self.hooks.off_now)();
+        let now = (self.hooks.grid_now)();
         let mut st = self.st.lock().unwrap();
         let Some(d) = st.store.devices.get_mut(device) else { return };
         let Some(a) = d.choices.get(choice).cloned() else { return };
@@ -598,9 +600,9 @@ impl Automation {
         }
         let (id, delay, on) = (d.id.clone(), d.delay_s, d.enabled);
         self.save(&st);
-        if let (Some(o), true) = (off_now, st.runs()) {
-            if set_now(true, on, which) {
-                self.send(&mut st, &id, a, o.at, delay_left(delay, o.off_for_s), None);
+        if let (Some(n), true) = (now, st.runs()) {
+            if set_now(Some(n.which), on, which) {
+                self.send(&mut st, &id, a, n.at, delay_left(delay, n.for_s), None);
             }
         }
         drop(st);
@@ -635,7 +637,7 @@ impl Automation {
     }
 
     /// Add Device…: `item` is the position in the view's `add` list. Loads its choices, then
-    /// saves it with its switch on; while the grid is off now it gets its grid-off action.
+    /// saves it with its switch on, and gives it the action for the grid's state now.
     pub fn add(self: &Arc<Self>, item: usize) {
         let (dev, client) = {
             let mut st = self.st.lock().unwrap();
@@ -649,18 +651,19 @@ impl Automation {
         let me = self.clone();
         async_runtime::spawn(async move {
             let r = client.choices(&dev.id).await;
-            let off_now = (me.hooks.off_now)();
+            let now = (me.hooks.grid_now)();
             {
                 let mut st = me.st.lock().unwrap();
                 st.pending.retain(|p| p.id != dev.id);
                 match r {
                     Ok(choices) => match defaults(&choices) {
                         Some((off, on)) => {
-                            st.store.devices.push(Device { id: dev.id.clone(), name: dev.name.clone(), choices, off: off.clone(), on, delay_s: 0, enabled: true });
+                            let action = now.map(|n| if n.which == Which::Off { off.clone() } else { on.clone() });
+                            st.store.devices.push(Device { id: dev.id.clone(), name: dev.name.clone(), choices, off, on, delay_s: 0, enabled: true });
                             st.run.entry(dev.id.clone()).or_default().offline = !dev.online;
                             me.save(&st);
-                            if let (Some(o), true) = (off_now, st.runs()) {
-                                me.send(&mut st, &dev.id, off, o.at, 0, None);
+                            if let (Some(n), Some(a), true) = (now, action, st.runs()) {
+                                me.send(&mut st, &dev.id, a, n.at, 0, None);
                             }
                         }
                         None => st.add_err = Some(format!("{} has nothing to switch.", dev.name)),
@@ -816,7 +819,7 @@ impl Automation {
 
     /// The Automation pane's part of `settings-state`. Never a device id or the Secret.
     pub fn view(&self, signed_in: bool) -> View {
-        let off_now = (self.hooks.off_now)().is_some();
+        let off_now = (self.hooks.grid_now)().is_some_and(|n| n.which == Which::Off);
         let st = self.st.lock().unwrap();
         let (disabled, hint) = hint(st.keys.is_some(), st.store.devices.len(), signed_in, st.problem, st.store.devices.iter().all(|d| d.enabled), off_now);
         let rejected = st.problem == Some(Problem::KeysRejected);
@@ -879,12 +882,13 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
     const AT: &str = "2026-10-18 09:52:00";
+    const GRID_ON: i64 = -2;
 
     struct T {
         auto: Arc<Automation>,
         log: Log,
         lines: Arc<Mutex<Vec<String>>>,
-        /// The grid is off now, for this many seconds (< 0: not off).
+        /// The grid is off now, for this many seconds; GRID_ON; else (< 0) Unknown or stale.
         off_for: Arc<AtomicI64>,
     }
 
@@ -894,8 +898,12 @@ mod tests {
             let n = self.auto.st.lock().unwrap().store.devices.len();
             (0..n).for_each(|i| self.auto.set_on(i, on));
         }
+        /// < 0: Unknown or stale.
         fn grid_off_for(&self, s: i64) {
             self.off_for.store(s, Ordering::SeqCst);
+        }
+        fn grid_on(&self) {
+            self.off_for.store(GRID_ON, Ordering::SeqCst);
         }
     }
 
@@ -929,9 +937,13 @@ mod tests {
             Hooks {
                 changed: Box::new(|| {}),
                 log: Box::new(move |s| l2.lock().unwrap().push(s.to_owned())),
-                off_now: Box::new(move || {
-                    let s = o2.load(Ordering::SeqCst);
-                    (s >= 0).then(|| OffNow { at: LocalTs::parse(AT).unwrap(), off_for_s: s })
+                grid_now: Box::new(move || {
+                    let (s, at) = (o2.load(Ordering::SeqCst), LocalTs::parse(AT).unwrap());
+                    match s {
+                        GRID_ON => Some(GridNow { which: Which::On, at, for_s: i64::MAX }),
+                        s if s >= 0 => Some(GridNow { which: Which::Off, at, for_s: s }),
+                        _ => None,
+                    }
                 }),
             },
         );
@@ -1126,12 +1138,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn turn_on_while_grid_on_sends_nothing() {
+    async fn turn_on_while_grid_unknown_sends_nothing() {
         let t = setup(vec![light("dev-a", "Table LED")], false, tuya(|_| (0, ok("true")))).await;
-        t.set_all(true); // grid On, Unknown or stale: off_now is None
+        t.set_all(true); // grid Unknown or stale: grid_now is None
         settle(&t.auto).await;
         assert!(commands(&t.log).is_empty());
         assert!(t.auto.view(true).devices[0].enabled);
+    }
+
+    #[tokio::test]
+    async fn settings_change_while_grid_on_sets_it_now() {
+        // T-021: Asif changed the Table LED's Grid on choice with the grid on, and nothing was sent.
+        let mut f = fan("dev-b", "Fan");
+        f.delay_s = 60; // the grid came back long ago: no wait
+        let t = setup(vec![light("dev-a", "Table LED"), f], false, tuya(|_| (0, ok("true")))).await;
+        t.grid_on();
+        t.auto.set_on(0, true); // its Grid on action, Colour
+        settle(&t.auto).await;
+        t.auto.set_action(0, Which::On, 5); // Music: the current state's choice
+        settle(&t.auto).await;
+        t.auto.set_action(0, Which::Off, 2); // the other state's choice: nothing now
+        t.auto.set_on(1, true); // the fan's Grid on action, Off, at once
+        settle(&t.auto).await;
+        assert_eq!(commands(&t.log), [cmd("dev-a", "work_mode=colour"), cmd("dev-a", "work_mode=music"), cmd("dev-b", "switch_fan=false")]);
+        assert_eq!(t.auto.view(true).devices[0].last.as_ref().unwrap().text, "Set to Music at 9:52\u{a0}AM");
+        // A device switched off sends nothing for a change.
+        t.auto.set_on(0, false);
+        t.auto.set_action(0, Which::On, 3);
+        settle(&t.auto).await;
+        assert_eq!(commands(&t.log).len(), 3);
     }
 
     #[tokio::test]
@@ -1165,7 +1200,7 @@ mod tests {
         t.grid_off_for(2);
         let t0 = Instant::now();
         t.set_all(true);
-        // Its time: 9:52:00 (the grid change, off_now.at) + the 4 s left.
+        // Its time: 9:52:00 (the grid change, grid_now.at) + the 4 s left.
         assert_eq!(t.auto.st.lock().unwrap().run["dev-b"].waiting.as_ref().unwrap().1, LocalTs::parse("2026-10-18 09:52:04").unwrap());
         settle(&t.auto).await;
         let e = t0.elapsed();
@@ -1222,13 +1257,30 @@ mod tests {
         assert_eq!(v.devices[0].choices, ["On", "Off"]); // the countdown number is not offered
         assert_eq!((v.devices[0].off, v.devices[0].on, v.devices[0].delay_s), (0, 1, 0));
         assert_eq!(commands(&t.log), [cmd("dev-b", "switch_fan=true")]);
-        // Grid on: adding sends nothing.
+        // Grid unknown or stale: adding sends nothing.
         t.grid_off_for(-1);
         t.auto.add(0);
         settle(&t.auto).await;
         assert_eq!(commands(&t.log).len(), 1);
         // The list said the Table LED is offline: its row says so until a command works.
         assert!(t.auto.view(true).devices[1].offline);
+    }
+
+    #[tokio::test]
+    async fn add_while_grid_on_sets_its_grid_on_action() {
+        // T-021: adding acts at once in both grid states.
+        let t = setup(vec![], true, tuya(|_| (0, ok("true")))).await;
+        t.auto.refresh_devices();
+        for _ in 0..100 {
+            if matches!(t.auto.view(true).add, AddView::Items(_)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        t.grid_on();
+        t.auto.add(0);
+        settle(&t.auto).await;
+        assert_eq!(commands(&t.log), [cmd("dev-b", "switch_fan=false")]);
     }
 
     #[tokio::test]
@@ -1269,10 +1321,12 @@ mod tests {
 
     #[test]
     fn set_now_rule() {
-        assert!(set_now(true, true, Which::Off));
-        assert!(!set_now(true, true, Which::On));
-        assert!(!set_now(false, true, Which::Off));
-        assert!(!set_now(true, false, Which::Off));
+        assert!(set_now(Some(Which::Off), true, Which::Off));
+        assert!(set_now(Some(Which::On), true, Which::On));
+        assert!(!set_now(Some(Which::Off), true, Which::On));
+        assert!(!set_now(Some(Which::On), true, Which::Off));
+        assert!(!set_now(None, true, Which::Off));
+        assert!(!set_now(Some(Which::Off), false, Which::Off));
     }
 
     #[tokio::test]
