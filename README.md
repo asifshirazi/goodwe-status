@@ -101,7 +101,7 @@ export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(security find-generic-password -s '
 RUSTFLAGS="--remap-path-prefix=$HOME=~" cargo tauri build --bundles app
 B=src-tauri/target/release/bundle/macos
 strings -a "$B/GoodWe Status.app/Contents/MacOS/goodwe-status" | grep -c "$HOME"   # must print 0
-ditto -c -k --keepParent "$B/GoodWe Status.app" "GoodWe-Status-$V-macos-arm64.zip"
+ditto -c -k --norsrc --keepParent "$B/GoodWe Status.app" "GoodWe-Status-$V-macos-arm64.zip"
 # The update package: no spaces in asset names (GitHub turns them into dots).
 cp "$B/GoodWe Status.app.tar.gz" "GoodWe-Status-$V-macos-arm64.app.tar.gz"
 cp "$B/GoodWe Status.app.tar.gz.sig" "GoodWe-Status-$V-macos-arm64.app.tar.gz.sig"
