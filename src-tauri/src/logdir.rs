@@ -3,14 +3,20 @@
 
 use crate::clock::LocalTs;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const LOG: &str = "goodwe-status.log";
 const LOG_MAX_BYTES: u64 = 1 << 20;
 const KEEP_DUMPS: usize = 10;
+/// The same failure again is logged at most this often, with how many were held back (T-026).
+const REPEAT_EVERY_S: u64 = 30 * 60;
+/// ...and its reply dumped at most this often, so a broken API can't rotate the first dump away.
+const DUMP_EVERY_S: u64 = 6 * 3600;
 
 /// Keys whose values are personal (ids, serials, names, places, secrets). Matched lower-case.
 const PERSONAL: &[&str] = &[
@@ -29,6 +35,9 @@ fn personal(key: &str) -> bool {
         || k.contains("serial") // serialNum, ...
         || k.contains("checkcode") // laCheckcode, ...
         || k.contains("address") // address, pw_address (station list), ...
+        || k.contains("token") // access_token, refresh_token (Tuya), ...
+        || k.ends_with("_key") || k.contains("secret") // local_key (Tuya), ...
+        || ["ip", "lon"].contains(&k.as_str()) // Tuya device list
 }
 
 const ZERO_UUID: &str = "00000000-0000-0000-0000-000000000000";
@@ -175,9 +184,115 @@ pub fn line(dir: &Path, msg: &str) {
     }
 }
 
+/// One failed call for the log (T-026). `call`: "sems/reading", "tuya/devices"…; `kind`: what
+/// went wrong, without dates or values (repeats of one call + kind are rate-limited); `line`:
+/// the whole entry; `reply`: the raw body, dumped redacted when the line is written.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fail {
+    pub call: String,
+    pub kind: String,
+    pub line: String,
+    pub reply: Option<String>,
+}
+
+#[derive(Debug)]
+struct Seen {
+    logged: u64,
+    dumped: Option<u64>,
+    held: u32,
+    /// Failures since the call last worked.
+    since_ok: u32,
+    /// A line for this key reached the log since the last `OK` line: the next success writes one.
+    owe_ok: bool,
+}
+
+/// Repeats per `call|kind` key, in memory (a restart logs the first one again). A key outlives a
+/// success, so a call that flaps (fail, ok, fail…) keeps its 30-minute window and repeat count
+/// instead of writing a FAIL and an OK line every other poll (T-026 B-Y2).
+#[derive(Debug, Default)]
+struct Limiter(BTreeMap<String, Seen>);
+
+impl Limiter {
+    /// `Some(n)`: write this one (n = repeats held back since the last line); `None`: hold it back.
+    fn hit(&mut self, key: &str, now: u64) -> Option<u32> {
+        let Some(s) = self.0.get_mut(key) else {
+            self.0.insert(key.to_owned(), Seen { logged: now, dumped: None, held: 0, since_ok: 1, owe_ok: true });
+            return Some(0);
+        };
+        s.since_ok += 1;
+        if now >= s.logged + REPEAT_EVERY_S {
+            (s.logged, s.owe_ok) = (now, true);
+            return Some(std::mem::take(&mut s.held));
+        }
+        s.held += 1;
+        None
+    }
+
+    fn dump_due(&mut self, key: &str, now: u64) -> bool {
+        let Some(s) = self.0.get_mut(key) else { return false };
+        let due = s.dumped.is_none_or(|d| now >= d + DUMP_EVERY_S);
+        if due {
+            s.dumped = Some(now);
+        }
+        due
+    }
+
+    /// `call` worked: its failures since it last worked, when one of them reached the log since the
+    /// last `OK` line (else 0: nothing to say, the held-back ones show in the next FAIL line's count).
+    fn ok(&mut self, call: &str) -> u32 {
+        let p = format!("{call}|");
+        let (mut n, mut owed) = (0, false);
+        for s in self.0.iter_mut().filter(|(k, _)| k.starts_with(&p)).map(|(_, s)| s) {
+            n += std::mem::take(&mut s.since_ok);
+            owed |= std::mem::take(&mut s.owe_ok);
+        }
+        if owed {
+            n
+        } else {
+            0
+        }
+    }
+}
+
+/// One limiter per log folder (tests each use their own).
+static LIMITS: Mutex<BTreeMap<PathBuf, Limiter>> = Mutex::new(BTreeMap::new());
+
+fn limits<T>(dir: &Path, f: impl FnOnce(&mut Limiter) -> T) -> T {
+    let mut all = LIMITS.lock().unwrap_or_else(|e| e.into_inner());
+    f(all.entry(dir.to_owned()).or_default())
+}
+
+/// Logs a failure, unless the same one was logged under 30 min ago (then it is counted and the
+/// next line says how many were held back). Its reply, if any, is dumped at most once per 6 h.
+/// Emails and UUIDs in the line are scrubbed as a last guard; never put ids or secrets in it.
+pub fn fail(dir: &Path, f: &Fail) {
+    fail_at(dir, f, utc_stamp().0)
+}
+
+fn fail_at(dir: &Path, f: &Fail, now: u64) {
+    let key = format!("{}|{}", f.call, f.kind);
+    let Some((held, dump)) = limits(dir, |l| l.hit(&key, now).map(|h| (h, f.reply.is_some() && l.dump_due(&key, now)))) else { return };
+    let mut msg = scrub_text(&f.line);
+    if held > 0 {
+        msg += &format!(" (repeated {held} times since the last line)");
+    }
+    if let (true, Some(r)) = (dump, &f.reply) {
+        msg += &format!(" · saved {}", dump_bad_reply(dir, &f.kind, r));
+    }
+    line(dir, &msg);
+}
+
+/// `call` worked: one `OK` line when it had failed since it last worked.
+pub fn ok(dir: &Path, call: &str) {
+    let n = limits(dir, |l| l.ok(call));
+    if n > 0 {
+        line(dir, &format!("OK {call} · working again after {n} failed {}", if n == 1 { "call" } else { "calls" }));
+    }
+}
+
 /// Writes `bad-reply-<time>-<nn>.json` with the reason and the redacted reply, keeps the newest 10,
-/// and logs the reason. A reply that isn't JSON is kept as text, cut to 4 KB.
-pub fn dump_bad_reply(dir: &Path, reason: &str, raw: &str) {
+/// and returns its name. A reply that isn't JSON is kept as text, cut to 4 KB.
+pub fn dump_bad_reply(dir: &Path, reason: &str, raw: &str) -> String {
     let _ = fs::create_dir_all(dir);
     let reply = match serde_json::from_str::<Value>(raw) {
         Ok(v) => redact(&v),
@@ -191,7 +306,6 @@ pub fn dump_bad_reply(dir: &Path, reason: &str, raw: &str) {
         .unwrap_or_default();
     let body = json!({ "time": stamp, "reason": reason, "reply": reply });
     let _ = fs::write(dir.join(&name), serde_json::to_string_pretty(&body).unwrap_or_default());
-    line(dir, &format!("unreadable reply: {reason} (saved {name})"));
 
     let mut dumps: Vec<_> = fs::read_dir(dir)
         .into_iter()
@@ -204,6 +318,7 @@ pub fn dump_bad_reply(dir: &Path, reason: &str, raw: &str) {
     for old in dumps.iter().rev().skip(KEEP_DUMPS) {
         let _ = fs::remove_file(dir.join(old));
     }
+    name
 }
 
 #[cfg(test)]
@@ -292,12 +407,98 @@ mod tests {
         for i in 0..12 {
             fs::write(dir.join(format!("bad-reply-{:010}.json", i)), "{}").unwrap();
         }
-        dump_bad_reply(&dir, "field `info.time` missing", r#"{"data":{"token":"secret","info":{}}}"#);
+        let f = Fail { call: "sems/reading".into(), kind: "info.time".into(), line: "CHANGED sems/reading · field `info.time` missing".into(), reply: Some(r#"{"data":{"token":"secret","info":{}}}"#.into()) };
+        fail(&dir, &f);
         let names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(names.iter().filter(|n| n.starts_with("bad-reply-")).count(), 10);
         let all: String = names.iter().map(|n| fs::read_to_string(dir.join(n)).unwrap()).collect();
         assert!(!all.contains("secret"));
-        assert!(fs::read_to_string(dir.join(LOG)).unwrap().contains("field `info.time` missing"));
+        let log = fs::read_to_string(dir.join(LOG)).unwrap();
+        assert!(log.contains("field `info.time` missing · saved bad-reply-"), "{log}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn read_log(dir: &Path) -> Vec<String> {
+        fs::read_to_string(dir.join(LOG)).unwrap_or_default().lines().map(|l| l.split_once(' ').unwrap().1.to_owned()).collect()
+    }
+
+    #[test]
+    fn tuya_replies_are_redacted_in_the_dump() {
+        // shaped like /v1.0/iot-01/associated-users/devices and /v1.0/token; made-up values
+        let reply = json!({"devices": [{"id": "bf0123456789abcdefgh", "uuid": "ab12cd34ef56", "name": "Table LED", "product_name": "LED", "local_key": "k3y!value",
+            "ip": "203.0.113.7", "lat": "24.86", "lon": "67.00", "owner_id": "1234567", "uid": "ay1600000000000aBcDe", "category": "dd", "online": true}],
+            "access_token": "tok-access", "refresh_token": "tok-refresh", "expire_time": 7200});
+        let out = redact(&reply).to_string();
+        for secret in ["bf0123456789abcdefgh", "ab12cd34ef56", "Table LED", "k3y!value", "203.0.113.7", "24.86", "67.00", "1234567", "ay1600000000000aBcDe", "tok-access", "tok-refresh"] {
+            assert!(!out.contains(secret), "{secret} survived in {out}");
+        }
+        assert!(out.contains(r#""category":"dd""#) && out.contains("7200"), "{out}");
+        // and through logdir::fail: the dump file holds none of it either
+        let dir = std::env::temp_dir().join(format!("gw-logtest-tuya-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fail(&dir, &Fail { call: "tuya/devices".into(), kind: "missing result.devices".into(), line: "CHANGED tuya/devices · x".into(), reply: Some(reply.to_string()) });
+        let all: String = fs::read_dir(&dir).unwrap().map(|e| fs::read_to_string(e.unwrap().path()).unwrap()).collect();
+        assert!(all.contains("saved bad-reply-") && !all.contains("k3y!value") && !all.contains("bf0123456789abcdefgh"), "{all}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn repeats_are_held_back_and_counted() {
+        let dir = std::env::temp_dir().join(format!("gw-logtest-rate-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let f = |kind: &str, reply: Option<&str>| Fail { call: "sems+/day".into(), kind: kind.into(), line: format!("FAIL sems+/day · {kind}"), reply: reply.map(str::to_owned) };
+        let t0 = 1_000_000;
+        fail_at(&dir, &f("network: timeout", None), t0);
+        for i in 1..=5 {
+            fail_at(&dir, &f("network: timeout", None), t0 + i * 60); // every 2 min: held back
+        }
+        fail_at(&dir, &f("code 500", None), t0 + 60); // another kind: its own line
+        fail_at(&dir, &f("network: timeout", None), t0 + REPEAT_EVERY_S);
+        assert_eq!(read_log(&dir), [
+            "FAIL sems+/day · network: timeout",
+            "FAIL sems+/day · code 500",
+            "FAIL sems+/day · network: timeout (repeated 5 times since the last line)",
+        ]);
+        // recovery: one line for the call, counting every failure, then nothing more
+        ok(&dir, "sems+/day");
+        ok(&dir, "sems+/day");
+        ok(&dir, "sems/reading");
+        assert_eq!(read_log(&dir).last().unwrap(), "OK sems+/day · working again after 8 failed calls");
+        assert_eq!(read_log(&dir).len(), 4);
+        // B-Y2: a call that flaps (fail, ok, fail, ok every poll) stays quiet inside the 30 minutes:
+        // no FAIL and no OK, and the held-back failures show in the next line's count
+        for i in 1..=10 {
+            fail_at(&dir, &f("network: timeout", None), t0 + REPEAT_EVERY_S + i * 120);
+            ok(&dir, "sems+/day");
+        }
+        assert_eq!(read_log(&dir).len(), 4);
+        fail_at(&dir, &f("network: timeout", None), t0 + 2 * REPEAT_EVERY_S);
+        ok(&dir, "sems+/day");
+        assert_eq!(read_log(&dir)[4..], ["FAIL sems+/day · network: timeout (repeated 10 times since the last line)", "OK sems+/day · working again after 1 failed call"]);
+
+        // dumps: at most one per key per 6 h, even when the line itself is due
+        let bad = Some(r#"{"code":"00000"}"#);
+        fail_at(&dir, &f("missing pBat", bad), t0);
+        fail_at(&dir, &f("missing pBat", bad), t0 + REPEAT_EVERY_S);
+        fail_at(&dir, &f("missing pBat", bad), t0 + DUMP_EVERY_S);
+        let dumps = fs::read_dir(&dir).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("bad-reply-")).count();
+        assert_eq!(dumps, 2);
+        let log = read_log(&dir);
+        assert!(log[6].contains("· saved bad-reply-") && !log[7].contains("saved") && log[8].contains("· saved bad-reply-"), "{log:?}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn failure_lines_never_carry_an_email_or_station_id() {
+        let dir = std::env::temp_dir().join(format!("gw-logtest-redact-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let line = "FAIL sems/login · login refused, code 1: user a.b@example.com station 3f2c9a1e-7b4d-4c2a-9e1f-5a6b7c8d9e0f";
+        fail(&dir, &Fail { call: "sems/login".into(), kind: "code 1".into(), line: line.into(), reply: None });
+        let log = fs::read_to_string(dir.join(LOG)).unwrap();
+        for secret in ["a.b@example.com", "3f2c9a1e"] {
+            assert!(!log.contains(secret), "{log}");
+        }
+        assert!(log.contains("FAIL sems/login · login refused, code 1: user redacted station 00000000-"), "{log}");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -305,17 +506,14 @@ mod tests {
     fn dumps_in_one_second_get_their_own_files() {
         let dir = std::env::temp_dir().join(format!("gw-logtest-sec-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        for i in 0..4 {
-            dump_bad_reply(&dir, &format!("reason {i}"), &format!(r#"{{"n":{i}}}"#));
-        }
+        let returned: Vec<_> = (0..4).map(|i| dump_bad_reply(&dir, &format!("reason {i}"), &format!(r#"{{"n":{i}}}"#))).collect();
         let mut names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("bad-reply-")).collect();
         assert_eq!(names.len(), 4, "{names:?}");
         names.sort();
         // oldest first, so the keep-10 prune still drops the oldest
         let reasons: Vec<_> = names.iter().map(|n| serde_json::from_str::<Value>(&fs::read_to_string(dir.join(n)).unwrap()).unwrap()["reason"].as_str().unwrap().to_owned()).collect();
         assert_eq!(reasons, ["reason 0", "reason 1", "reason 2", "reason 3"]);
-        let log = fs::read_to_string(dir.join(LOG)).unwrap();
-        assert!(names.iter().all(|n| log.contains(n.as_str())), "each log line names its own file");
+        assert_eq!(returned, names, "each call names its own file");
         fs::remove_dir_all(&dir).unwrap();
     }
 }

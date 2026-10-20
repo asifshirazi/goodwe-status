@@ -123,7 +123,13 @@ Upload all four with the release: the `.zip` (manual installs), the `.app.tar.gz
 
 ## When GoodWe changes their API
 
-1. When a reply can't be read, the menu bar item greys out and the reason plus the reply (personal fields removed) go to the log. Click the menu bar item, then **Settings › General › Open Log Folder**.
+1. Open the log: click the menu bar item, then **Settings › General › Open Log Folder** (`goodwe-status.log`). Each failed call to GoodWe or Tuya writes one line that names the call, what came back and what the app did, for example:
+   - `CHANGED sems+/day today's history · API may have changed: sems+ day missing dataList[item=pBat] · action: … · saved bad-reply-….json`: a field the app reads is gone or renamed (GoodWe or Tuya). The reply is saved next to the log as `bad-reply-….json`, with personal fields removed.
+   - `FAIL sems/reading · network: timeout · action: kept the last reading, next poll in 2 min`: GoodWe didn't answer. `body read failed` means the answer was cut off.
+   - `STALE sems/reading …` or `STALE sems+/day …`: the reading or today's history stopped moving. An `OK …` line follows when it moves again, or when a failing call works again.
+   - `FAIL tuya/devices …`, `FAIL tuya/command …`: the same for Tuya, with Tuya's code and its meaning.
+
+   The same failure is written at most once every 30 minutes, with a count of the repeats, and its reply is saved at most once every 6 hours. The log never holds your email, password, tokens, station id, serial numbers or device ids.
 2. Every URL, header, field path and the grid-off minute rule lives in `src-tauri/src/sems.rs`; the outage, "since", "back around" and "next cut" rules live in `src-tauri/src/outages.rs`. Fix the mapping there.
 3. Save the new reply in `src-tauri/tests/fixtures/` with all personal data removed (email, tokens, station id, serial numbers, address), and add its expected result to the tests in `sems.rs` (`sems-plus-grid-history.json` is the history sample: its expected off minutes are there too).
 4. Run `cargo test --manifest-path src-tauri/Cargo.toml` until it passes, then open an issue or pull request with the redacted sample.

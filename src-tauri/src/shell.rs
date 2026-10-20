@@ -180,12 +180,7 @@ pub fn ask_notifications(app: &AppHandle) {
 /// part. Logs, notifies on a confirmed grid change and on low battery, redraws.
 pub fn after_poll(app: &AppHandle, rep: PollReport) {
     let dir = &app.state::<Shell>().log_dir;
-    for e in &rep.errors {
-        logdir::line(dir, e);
-    }
-    for (reason, reply) in &rep.bad_replies {
-        logdir::dump_bad_reply(dir, reason, reply);
-    }
+    log_report(dir, &rep);
     if let Some(d) = &rep.disagreement {
         logdir::line(dir, &format!("grid signals disagree, state kept: {d}"));
     }
@@ -203,6 +198,14 @@ pub fn after_poll(app: &AppHandle, rep: PollReport) {
     }
     refresh(app);
     check_notifications(app);
+}
+
+/// A poll's or the history walk's log lines: recoveries first (they clear old failures), then
+/// this report's failures, then the stale checks.
+pub fn log_report(dir: &std::path::Path, rep: &PollReport) {
+    rep.oks.iter().for_each(|c| logdir::ok(dir, c));
+    rep.fails.iter().for_each(|f| logdir::fail(dir, f));
+    rep.notes.iter().for_each(|n| logdir::line(dir, n));
 }
 
 /// A notification with sound, logged; sent in its own task.

@@ -94,8 +94,10 @@ pub struct Day {
 pub enum SemsError {
     /// SEMS refused the email or password. Show the sign-in box.
     WrongLogin(String),
-    /// No answer, a timeout, HTTP 5xx, a rate limit: count as a failed poll.
+    /// No answer, a timeout, HTTP 5xx: count as a failed poll.
     Network(String),
+    /// The status came but the body could not be read (cut off, a bad encoding). Not the network (T-026).
+    Body(String),
     /// The session token stopped working: log in again once.
     Expired,
     /// SEMS+ GY0429 or HTTP 429: too many calls, slow down (T-015 § 4.9).
@@ -111,6 +113,7 @@ impl std::fmt::Display for SemsError {
         match self {
             SemsError::WrongLogin(m) => write!(f, "login refused: {m}"),
             SemsError::Network(m) => write!(f, "network: {m}"),
+            SemsError::Body(m) => write!(f, "body read failed ({m})"),
             SemsError::Expired => write!(f, "session expired"),
             SemsError::RateLimited => write!(f, "rate limited"),
             SemsError::Parse { reason, .. } => write!(f, "unreadable reply: {reason}"),
@@ -262,6 +265,10 @@ fn plus_series(v: &Value, day: i64) -> Result<impl Fn(&str) -> Result<Points, St
     Ok(move |item: &str| {
         let s = list.iter().find(|s| s["item"] == item).ok_or_else(|| missing(&format!("dataList[item={item}]")))?;
         let pts = s["powerData"].as_array().ok_or_else(|| missing(&format!("{item}.powerData")))?;
+        // A renamed point field would otherwise only leave the series empty (T-026).
+        if let Some(f) = ["tp", "power"].into_iter().find(|f| !pts.is_empty() && pts.iter().all(|p| p.get(f).is_none())) {
+            return Err(missing(&format!("{item}.powerData[].{f}")));
+        }
         Ok(pts
             .iter()
             .filter(|p| p["isCE"] != Value::Bool(true))
@@ -292,13 +299,14 @@ fn check_plus_code(v: &Value) -> Result<(), String> {
 
 /// A login that did not succeed. Only SEMS's bad-credential code (100005, "Email or password
 /// error.", classic and SEMS+ alike, checked 2026-10-18) is `WrongLogin`; any other code or a
-/// missing token is a passing failure (`Network`), so an outage hiccup never signs the user out.
+/// missing token is a passing failure (`Parse`, so the reply is dumped), so an outage hiccup never
+/// signs the user out.
 fn login_refused(v: &Value, msg_key: &str) -> SemsError {
     let msg = v[msg_key].as_str().unwrap_or("no token").to_owned();
     match &v["code"] {
         Value::Number(n) if n.as_i64() == Some(100005) => SemsError::WrongLogin(msg),
         Value::String(s) if s == "100005" => SemsError::WrongLogin(msg),
-        c => SemsError::Network(format!("login failed, code {c}: {msg}")),
+        c => SemsError::Parse { reason: format!("login refused, code {c}: {msg}"), reply: v.to_string() },
     }
 }
 
@@ -366,6 +374,8 @@ pub struct Client {
     plus: Option<Session>,
     /// One SEMS+ day call at a time across the app: the poll's and the history walk's (T-015 § 4.7).
     gate: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// The call `reading` or `day` made last ("sems/login", "sems+/day", …), for the log (T-026).
+    pub call: &'static str,
 }
 
 impl Client {
@@ -374,7 +384,7 @@ impl Client {
             .timeout(Duration::from_secs(20))
             .build()
             .expect("reqwest client"); // only fails if the TLS backend can't start
-        Client { http, creds, classic: None, plus: None, gate: Default::default() }
+        Client { http, creds, classic: None, plus: None, gate: Default::default(), call: "sems/reading" }
     }
 
     pub fn signed_in(&self) -> bool {
@@ -425,8 +435,10 @@ impl Client {
         for attempt in 0..2 {
             if self.classic.is_none() {
                 let creds = self.creds.clone().ok_or(SemsError::SignedOut)?;
+                self.call = "sems/login";
                 self.classic = Some(self.classic_login(&creds).await?);
             }
+            self.call = "sems/reading";
             let s = self.classic.as_ref().expect("set above");
             let url = format!("{}v1/PowerStation/GetMonitorDetailByPowerstationId", s.api);
             let (v, body) = self.post_classic(&url, &s.token, json!({ "powerStationId": s.station })).await?;
@@ -447,8 +459,10 @@ impl Client {
         for attempt in 0..2 {
             if self.plus.is_none() {
                 let creds = self.creds.clone().ok_or(SemsError::SignedOut)?;
+                self.call = "sems+/login";
                 self.plus = Some(self.plus_login(&creds).await?);
             }
+            self.call = "sems+/day";
             match day_call(&self.http, self.plus.as_ref().expect("set above"), date, utc_offset_h, setup).await {
                 Err(SemsError::Expired) if attempt == 0 => self.plus = None,
                 r => return r,
@@ -548,8 +562,19 @@ async fn post_plus(http: &reqwest::Client, url: &str, s: &Session, body: Value, 
     }
 }
 
+/// What went wrong on the wire, without the URL: "timeout", "connect error" or reqwest's text.
+fn transport(e: reqwest::Error) -> String {
+    if e.is_timeout() {
+        "timeout".into()
+    } else if e.is_connect() {
+        "connect error (no connection or DNS)".into()
+    } else {
+        e.without_url().to_string()
+    }
+}
+
 async fn send(req: reqwest::RequestBuilder) -> Result<(Value, String), SemsError> {
-    let resp = req.send().await.map_err(|e| SemsError::Network(e.without_url().to_string()))?;
+    let resp = req.send().await.map_err(|e| SemsError::Network(transport(e)))?;
     let status = resp.status();
     if status == reqwest::StatusCode::UNAUTHORIZED {
         return Err(SemsError::Expired);
@@ -560,7 +585,8 @@ async fn send(req: reqwest::RequestBuilder) -> Result<(Value, String), SemsError
     if status.is_server_error() {
         return Err(SemsError::Network(format!("HTTP {status}")));
     }
-    let raw = resp.text().await.map_err(|e| SemsError::Network(e.without_url().to_string()))?;
+    // A cut-off body or a bad encoding after a good status: not the network (T-026).
+    let raw = resp.text().await.map_err(|e| SemsError::Body(format!("HTTP {}: {}", status.as_u16(), transport(e))))?;
     let v = serde_json::from_str(&raw)
         .map_err(|e| SemsError::Parse { reason: format!("not JSON (HTTP {status}): {e}"), reply: raw.clone() })?;
     Ok((v, raw))
@@ -638,6 +664,22 @@ mod tests {
         assert!(c.points.windows(2).all(|w| w[0].0 < w[1].0));
         // another day's points are dropped
         assert!(parse_chart(&sample("sems-plus-power-history-day.json"), day + 1).unwrap().points.is_empty());
+        // T-026: a renamed point field is an unreadable reply, not an empty chart
+        for (f, new) in [("tp", "time"), ("power", "value")] {
+            let mut v = sample("sems-plus-power-history-day.json");
+            for s in v["data"]["dataList"].as_array_mut().unwrap() {
+                for p in s["powerData"].as_array_mut().unwrap() {
+                    let x = p.as_object_mut().unwrap().remove(f).unwrap();
+                    p[new] = x;
+                }
+            }
+            assert_eq!(parse_chart(&v, day).map(|_| ()), Err(format!("field `soc.powerData[].{f}` missing")));
+        }
+    }
+
+    #[test]
+    fn body_errors_are_not_network() {
+        assert_eq!(SemsError::Body("HTTP 200: error decoding response body".into()).to_string(), "body read failed (HTTP 200: error decoding response body)");
     }
 
     #[test]
@@ -775,8 +817,8 @@ mod tests {
     fn expired_codes() {
         assert_eq!(login_refused(&json!({"code": 100005, "msg": "Email or password error."}), "msg"), SemsError::WrongLogin("Email or password error.".into()));
         assert_eq!(login_refused(&json!({"code": "100005", "description": "x"}), "description"), SemsError::WrongLogin("x".into()));
-        assert!(matches!(login_refused(&json!({"code": 1, "msg": "system error"}), "msg"), SemsError::Network(_)));
-        assert!(matches!(login_refused(&json!({"code": 0, "data": {}}), "msg"), SemsError::Network(_)), "no token");
+        assert!(matches!(login_refused(&json!({"code": 1, "msg": "system error"}), "msg"), SemsError::Parse { reason, .. } if reason == "login refused, code 1: system error"));
+        assert!(matches!(login_refused(&json!({"code": 0, "data": {}}), "msg"), SemsError::Parse { .. }), "no token");
         assert!(classic_expired(&json!({"code": 100002, "msg": "x"})));
         assert!(classic_expired(&json!({"code": "100001"})));
         assert!(classic_expired(&json!({"code": 1, "msg": "The authorization has expired"})));

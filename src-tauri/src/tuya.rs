@@ -47,8 +47,12 @@ pub enum TuyaError {
     Code(i64),
     Network,
     Timeout,
-    /// Not JSON, or no `success`.
+    /// Not JSON.
     BadReply,
+    /// Not JSON, with an HTTP error status.
+    Http(u16),
+    /// A field the app reads is missing: the API may have changed (T-026). The reply, for the redacted dump.
+    Missing(&'static str, String),
 }
 
 impl TuyaError {
@@ -78,20 +82,27 @@ impl TuyaError {
             TuyaError::Network => "no connection".into(),
             TuyaError::Timeout => "no answer".into(),
             TuyaError::Code(c) => format!("error {c}"),
-            TuyaError::BadReply => "error reply".into(),
-        }
-    }
-    /// For the log: the code or the kind, nothing from the reply text.
-    pub fn short(&self) -> String {
-        match self {
-            TuyaError::Code(c) => c.to_string(),
-            TuyaError::Network => "network".into(),
-            TuyaError::Timeout => "timeout".into(),
-            TuyaError::BadReply => "bad reply".into(),
+            TuyaError::BadReply | TuyaError::Http(_) | TuyaError::Missing(..) => "error reply".into(),
         }
     }
     fn retry_later(&self) -> bool {
-        matches!(self, TuyaError::Network | TuyaError::Timeout | TuyaError::Code(1199 | 1110))
+        matches!(self, TuyaError::Network | TuyaError::Timeout | TuyaError::Code(1199 | 1110)) || matches!(self, TuyaError::Http(s) if *s >= 500)
+    }
+
+    /// The error's log line (T-026): `CHANGED` for a missing field, else `FAIL` with the code and its
+    /// meaning. `call`: "token", "devices", "choices", "command"; `what`: e.g. " device 2 of 4 → switch_led=true"
+    /// (never an id or a name); `action`: what the app did. `call` retries once on these (`Client::call`).
+    pub fn log_line(&self, call: &str, what: &str, action: &str) -> String {
+        let retried = call != "token" && (self.retry_later() || matches!(self.code(), Some(1010 | 1011)));
+        let got = match self {
+            TuyaError::Missing(f, _) => return format!("CHANGED tuya/{call}{what} · API may have changed: tuya {call} missing {f} · action: {action}"),
+            TuyaError::Code(c) => format!("code {c} ({})", self.reason()),
+            TuyaError::Network => "no connection".into(),
+            TuyaError::Timeout => "timeout, no answer".into(),
+            TuyaError::BadReply => "reply not JSON".into(),
+            TuyaError::Http(s) => format!("HTTP {s}, reply not JSON"),
+        };
+        format!("FAIL tuya/{call}{what} · {got}{} · action: {action}", if retried { ", after one retry" } else { "" })
     }
 }
 
@@ -105,7 +116,7 @@ pub struct Dev {
 }
 
 pub fn parse_devices(result: &Value) -> Result<(Vec<Dev>, Option<String>), TuyaError> {
-    let list = result["devices"].as_array().ok_or(TuyaError::BadReply)?;
+    let list = result["devices"].as_array().ok_or_else(|| TuyaError::Missing("result.devices", result.to_string()))?;
     let devs = list
         .iter()
         .filter_map(|d| {
@@ -244,7 +255,7 @@ impl Client {
         }
         *t = None;
         let r = self.raw("GET", "/v1.0/token?grant_type=1", None, "").await?;
-        let tok = r["access_token"].as_str().ok_or(TuyaError::BadReply)?.to_owned();
+        let tok = r["access_token"].as_str().ok_or_else(|| TuyaError::Missing("result.access_token", r.to_string()))?.to_owned();
         let life = Duration::from_secs(r["expire_time"].as_u64().unwrap_or(7200)).saturating_sub(TOKEN_MARGIN);
         *t = Some((tok.clone(), Instant::now() + life));
         Ok(tok)
@@ -271,11 +282,16 @@ impl Client {
             req = req.header("Content-Type", "application/json").body(body);
         }
         let resp = req.send().await.map_err(|e| if e.is_timeout() { TuyaError::Timeout } else { TuyaError::Network })?;
-        let v: Value = resp.json().await.map_err(|e| if e.is_timeout() { TuyaError::Timeout } else { TuyaError::BadReply })?;
+        let status = resp.status();
+        let v: Value = resp.json().await.map_err(|e| match () {
+            _ if e.is_timeout() => TuyaError::Timeout,
+            _ if !status.is_success() => TuyaError::Http(status.as_u16()),
+            _ => TuyaError::BadReply,
+        })?;
         match v["success"].as_bool() {
             Some(true) => Ok(v["result"].clone()),
             Some(false) => Err(TuyaError::Code(v["code"].as_i64().unwrap_or(0))),
-            None => Err(TuyaError::BadReply),
+            None => Err(TuyaError::Missing("success", v.to_string())),
         }
     }
 
@@ -494,6 +510,15 @@ mod tests {
     }
 
     /// Same inputs through `openssl dgst -sha256 -hmac secret` (recipe's string to sign).
+    #[test]
+    fn log_lines_name_the_call_code_and_retry() {
+        assert_eq!(TuyaError::Http(502).log_line("devices", "", "x"), "FAIL tuya/devices · HTTP 502, reply not JSON, after one retry · action: x");
+        assert_eq!(TuyaError::Timeout.log_line("token", "", "x"), "FAIL tuya/token · timeout, no answer · action: x", "the token call never retries");
+        assert_eq!(TuyaError::BadReply.log_line("command", " device 1 of 1 → switch_led=true", "x"), "FAIL tuya/command device 1 of 1 → switch_led=true · reply not JSON · action: x");
+        assert_eq!(TuyaError::Missing("success", String::new()).log_line("command", "", "x"), "CHANGED tuya/command · API may have changed: tuya command missing success · action: x");
+        assert_eq!(parse_devices(&json!({"rows": []})), Err(TuyaError::Missing("result.devices", r#"{"rows":[]}"#.into())));
+    }
+
     #[test]
     fn sign_matches_recipe() {
         let s = sign("secret", "id1700000000000n", "GET", "", "/v1.0/token?grant_type=1");

@@ -73,12 +73,13 @@ pub fn run() {
             app.manage(client.clone());
             logdir::line(&log_dir, "started");
             let auto = {
-                let (m, d, h) = (mon.clone(), log_dir.clone(), app.handle().clone());
+                let (m, d, d2, h) = (mon.clone(), log_dir.clone(), log_dir.clone(), app.handle().clone());
                 automation::Automation::new(
                     app.path().app_data_dir().ok().map(|p| p.join("settings.json")),
                     automation::Hooks {
                         changed: Box::new(move || settings::refresh(&h)),
                         log: Box::new(move |s| logdir::line(&d, s)),
+                        fail: Box::new(move |f| logdir::fail(&d2, f)),
                         grid_now: Box::new(move || {
                             let m = m.lock().unwrap();
                             let now = std::time::Instant::now();
@@ -149,8 +150,7 @@ pub fn run() {
                 }
                 let (h, d) = (handle.clone(), log_dir.clone());
                 tauri::async_runtime::spawn(monitor::walk(client.clone(), mon.clone(), walk_wake.clone(), move |rep| {
-                    rep.errors.iter().for_each(|e| logdir::line(&d, e));
-                    rep.bad_replies.iter().for_each(|(reason, reply)| logdir::dump_bad_reply(&d, reason, reply));
+                    shell::log_report(&d, &rep);
                     settings::refresh(&h);
                 }));
                 let h = handle.clone();

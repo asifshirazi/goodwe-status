@@ -2,6 +2,7 @@
 //! read a `Monitor` and react to `PollReport`s; tests drive it with a fake `Source`.
 
 use crate::clock::LocalTs;
+use crate::logdir;
 use crate::outages::{self, GridDay, HistStart, Outage, DAY, PAST_DAYS};
 use crate::rules::{self, ChartSource, GridState};
 use crate::sems::{self, ChartSeries, Day, GridSignal, Reading, SemsError};
@@ -28,6 +29,8 @@ pub trait Source: Send {
     fn plus_expired(&mut self);
     /// The signed-in station's id. Never logged.
     fn station(&self) -> Option<String>;
+    /// The call `reading` or `day` made last, for the log: "sems/login", "sems+/day"… (T-026).
+    fn call(&self) -> &'static str;
 }
 
 impl Source for sems::Client {
@@ -52,11 +55,16 @@ impl Source for sems::Client {
     fn station(&self) -> Option<String> {
         sems::Client::station(self)
     }
+    fn call(&self) -> &'static str {
+        self.call
+    }
 }
 
 /// A past day is fetched for good once the station clock is this far past its end (the reply
 /// runs about 2 minutes behind, so a fetch at 00:01 would miss 23:58 and 23:59).
 const DAY_FINAL_AFTER_MIN: i64 = 10;
+/// Today's history this far behind the station clock (minutes) logs a stale line (T-026; SEMS+ runs a few minutes behind).
+const DAY_STALE_MIN: u32 = 20;
 /// Past days fetched per poll at most (cold start: 14 days over five polls).
 const DAYS_PER_POLL: usize = 3;
 /// S7a: the On reading before the first Off one must be this close for an exact "Since 7:42 AM"
@@ -224,6 +232,8 @@ pub struct Monitor {
     pub show_cuts: bool,
     /// (time, inverter °C, battery °C) per new reading, back to the newest one 30 min old: the trend.
     pub(crate) temps: Vec<(LocalTs, Option<f64>, Option<f64>)>,
+    /// A stale line was logged for (the live reading, today's history) and no recovery line since (T-026).
+    stale_logged: (bool, bool),
 }
 
 impl Monitor {
@@ -264,6 +274,7 @@ impl Monitor {
             show_temps: true,
             show_cuts: true,
             temps: Vec::new(),
+            stale_logged: (false, false),
         }
     }
 
@@ -611,6 +622,45 @@ impl Monitor {
         rules::is_stale(self.seen_at.map(|t| now.duration_since(t)), self.failures)
     }
 
+    /// The stale-source lines (T-026): one when the live reading stops (the panel's stale rule) or
+    /// today's history falls 20 min behind the station clock while readings come in, and one when
+    /// it moves again.
+    pub fn stale_notes(&mut self, now: Instant) -> Vec<String> {
+        let mut out = vec![];
+        if !self.signed_in {
+            self.stale_logged = (false, false);
+            return out;
+        }
+        let at = self.last.as_ref().map_or("none yet".to_owned(), |r| r.time.hhmm());
+        let live = self.stale(now);
+        if live != self.stale_logged.0 {
+            self.stale_logged.0 = live;
+            out.push(match self.seen_at.map(|t| now.duration_since(t).as_secs() / 60) {
+                _ if !live => format!("OK sems/reading · new readings again (station time {at})"),
+                Some(m) if self.failures < rules::STALE_FAILURES => {
+                    format!("STALE sems/reading · no new reading for {m} min, station time stuck at {at} · action: the panel shows the last reading as old")
+                }
+                _ => format!("STALE sems/reading · {} failed polls in a row (last reading {at}) · action: the panel shows the last reading as old", self.failures),
+            });
+        }
+        // Today's history: only with a battery (no day calls without one), once tried, and not while the reading itself is stale.
+        let today = self.station_now(now).filter(|_| !live && self.history_tried && self.last.as_ref().is_some_and(|r| r.battery.is_some()));
+        if let Some(today) = today {
+            let newest = self.history.get(&today.day()).and_then(|g| g.newest);
+            let behind = today.minute_of_day().saturating_sub(newest.unwrap_or(0)) >= DAY_STALE_MIN;
+            let ends = newest.map_or("has no minutes yet".to_owned(), |n| format!("ends at {:02}:{:02}", n / 60, n % 60));
+            if behind != self.stale_logged.1 {
+                self.stale_logged.1 = behind;
+                out.push(if behind {
+                    format!("STALE sems+/day · today's history {ends}, station time {} · action: history shown up to then, asked again each poll", today.hhmm())
+                } else {
+                    format!("OK sems+/day · today's history moving again ({ends})")
+                });
+            }
+        }
+        out
+    }
+
     /// The station's wall clock now: the last `info.time` moved on by the app's clock.
     pub fn station_now(&self, now: Instant) -> Option<LocalTs> {
         let t = self.last.as_ref()?.time;
@@ -653,12 +703,14 @@ impl Monitor {
 #[derive(Debug, Default, PartialEq)]
 pub struct PollReport {
     pub notice: Option<Notice>,
-    /// (reason, raw reply) for each reply that could not be read: dump it redacted.
-    pub bad_replies: Vec<(String, String)>,
     /// Raw grid values when voltage and status disagreed: log them.
     pub disagreement: Option<String>,
-    /// Errors worth a log line (network, expired, signed out).
-    pub errors: Vec<String>,
+    /// One log entry per failed call (`logdir::fail`: rate-limited, the reply dumped redacted).
+    pub fails: Vec<logdir::Fail>,
+    /// Calls that worked: a recovery line when they had failed (`logdir::ok`). Logged before `fails`.
+    pub oks: Vec<&'static str>,
+    /// Plain lines: the stale-source checks.
+    pub notes: Vec<String>,
     /// The battery % when it reached a low battery level while the grid is off (T-008).
     pub low_battery: Option<f64>,
 }
@@ -680,22 +732,24 @@ pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monit
     let r = match src.reading().await {
         Ok(r) => r,
         Err(e) => {
-            rep.errors.push(e.to_string());
+            let action = match e {
+                SemsError::WrongLogin(_) | SemsError::SignedOut => "signed out, the panel asks to sign in",
+                SemsError::Expired => "logged in again once, still refused; kept the last reading, next poll in 2 min",
+                _ => "kept the last reading, next poll in 2 min",
+            };
+            push(&mut rep, fail_entry(src.call(), "", &e, action));
             let Some(mut m) = current() else { return rep };
             match e {
                 SemsError::WrongLogin(_) | SemsError::SignedOut => {
                     src.sign_out();
                     m.reset(false);
                 }
-                SemsError::Parse { reason, reply } => {
-                    rep.bad_replies.push((reason, reply));
-                    m.on_failure();
-                }
-                SemsError::Network(_) | SemsError::Expired | SemsError::RateLimited => m.on_failure(),
+                _ => m.on_failure(),
             }
             return rep;
         }
     };
+    rep.oks.extend(["sems/login", "sems/reading"]);
     if r.grid == GridSignal::Disagree {
         rep.disagreement = Some(format!("vac1 {} V, grid_conn_status {:?}", r.vac1, r.grid_status));
     }
@@ -703,6 +757,11 @@ pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monit
     let today = {
         let Some(mut m) = current() else { return rep };
         m.set_station(src.station());
+        // A field the app reads went missing without breaking the reply: the battery (T-026).
+        if m.last.as_ref().is_some_and(|l| l.battery.is_some()) && r.battery.is_none() {
+            let line = "CHANGED sems/reading · API may have changed: sems reading missing invert_full.soc (the last reading had a battery) · action: battery hidden until it comes back";
+            push(&mut rep, logdir::Fail { call: "sems/reading".into(), kind: "battery gone".into(), line: line.into(), reply: None });
+        }
         rep.notice = m.on_reading(r, Instant::now());
         rep.low_battery = m.low_alert.take();
         m.station_now(Instant::now())
@@ -713,11 +772,15 @@ pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monit
         // Today: chart and history are one call, so no extra request.
         let (chart, grid) = match src.day(today, offset, first == Some(today.day())).await {
             Ok(d) => {
-                let chart = d.chart.map_err(|e| failed(&mut rep, "chart", e)).ok();
-                (chart, d.grid.map_err(|e| failed(&mut rep, &format!("history {}", today.date()), e)).ok())
+                if d.chart.is_ok() && d.grid.is_ok() {
+                    rep.oks.extend(["sems+/login", "sems+/day"]);
+                }
+                let chart = d.chart.map_err(|e| push(&mut rep, fail_entry("sems+/day", "today's chart", &e, "chart drawn from the app's own readings"))).ok();
+                (chart, d.grid.map_err(|e| push(&mut rep, fail_entry("sems+/day", "today's history", &e, "today's history kept as it was"))).ok())
             }
             Err(e) => {
-                failed(&mut rep, "chart", e);
+                let action = "chart drawn from the app's own readings, today's history kept as it was";
+                push(&mut rep, fail_entry(src.call(), "today", &e, action));
                 (None, None)
             }
         };
@@ -735,17 +798,26 @@ pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monit
         for d in todo {
             let date = LocalTs(d * 86_400);
             let mut got = src.day(date, offset, first == Some(d)).await.and_then(|x| x.grid);
-            if matches!(got, Err(SemsError::Network(_))) {
+            let retried = matches!(got, Err(SemsError::Network(_) | SemsError::Body(_)));
+            if retried {
                 got = src.day(date, offset, first == Some(d)).await.and_then(|x| x.grid);
             }
             match got {
                 Ok(g) => match current() {
-                    Some(mut m) => m.on_day(d, g, now),
+                    Some(mut m) => {
+                        rep.oks.push(PAST);
+                        m.on_day(d, g, now)
+                    }
                     None => return rep,
                 },
                 Err(e) => {
                     let stop = matches!(e, SemsError::Expired | SemsError::SignedOut | SemsError::WrongLogin(_) | SemsError::RateLimited);
-                    failed(&mut rep, &format!("history {}", date.date()), e);
+                    let action = match (stop, retried) {
+                        (true, _) => "past days stopped until the next poll",
+                        (false, true) => "retried once, day skipped until the next poll",
+                        (false, false) => "day skipped until the next poll",
+                    };
+                    push(&mut rep, past_entry(src.call(), date, &e, action));
                     if stop {
                         break;
                     }
@@ -759,15 +831,56 @@ pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monit
     rep
 }
 
-/// Logs a failed SEMS+ read; an unreadable reply also goes to the redacted dump.
-fn failed(rep: &mut PollReport, what: &str, e: SemsError) {
-    rep.errors.push(format!("{what}: {e}"));
-    // Today's chart and grid come from one reply: an unreadable one is dumped once (T-004).
-    if let SemsError::Parse { reason, reply } = e {
-        if !rep.bad_replies.iter().any(|b| b.1 == reply) {
-            rep.bad_replies.push((format!("{what}: {reason}"), reply));
-        }
+/// The limiter's name for past-day calls (poll and walk), so today's working call never clears
+/// a past day's failures and lets them flood the log.
+const PAST: &str = "sems+/history";
+
+/// Adds an entry; today's chart and grid come from one reply, so an unreadable one is dumped once (T-004).
+fn push(rep: &mut PollReport, mut f: logdir::Fail) {
+    if f.reply.is_some() && rep.fails.iter().any(|x| x.reply == f.reply) {
+        f.reply = None;
     }
+    rep.fails.push(f);
+}
+
+/// One SEMS failure as a log entry (T-026): `CHANGED` when a field the app reads is missing or
+/// unreadable (the API may have changed; the reply goes to the redacted dump), else `FAIL` with
+/// what came back. `call`: "sems/reading", "sems+/day"…; `what`: the day or part; `action`: what the app did.
+pub fn fail_entry(call: &str, what: &str, e: &SemsError, action: &str) -> logdir::Fail {
+    let field = match e {
+        SemsError::Parse { reason, .. } => reason.split_once("field `").and_then(|(_, r)| r.split_once('`')).map(|(f, r)| (f, if r.starts_with(" missing") { "missing" } else { "unreadable" })),
+        _ => None,
+    };
+    let (level, got, kind) = match field {
+        Some((f, how)) => {
+            let g = format!("API may have changed: {} {how} {f}", call.replace('/', " "));
+            ("CHANGED", g.clone(), g)
+        }
+        None => {
+            let kind = match e {
+                // Without the value or position after the colon, so repeats share one key.
+                SemsError::Parse { reason, .. } => reason.split(':').next().unwrap_or_default().to_owned(),
+                SemsError::Body(_) => "body read failed".to_owned(),
+                e => e.to_string(),
+            };
+            ("FAIL", e.to_string().chars().take(200).collect(), kind)
+        }
+    };
+    let head = if what.is_empty() { call.to_owned() } else { format!("{call} {what}") };
+    let reply = match e {
+        SemsError::Parse { reply, .. } => Some(reply.clone()),
+        _ => None,
+    };
+    logdir::Fail { call: call.to_owned(), kind, line: format!("{level} {head} · {got} · action: {action}"), reply }
+}
+
+/// A past day's failure: shown under its call and date, limited as `PAST` unless it was a login.
+fn past_entry(call: &str, date: LocalTs, e: &SemsError, action: &str) -> logdir::Fail {
+    let mut f = fail_entry(call, &date.date(), e, action);
+    if call == "sems+/day" {
+        f.call = PAST.to_owned();
+    }
+    f
 }
 
 /// The history walk (T-015 § 4.6–4.9): every past day back to the station's first, one call at a
@@ -796,7 +909,7 @@ pub async fn walk<S: Source>(src: Arc<tokio::sync::Mutex<S>>, mon: Arc<Mutex<Mon
         let got = call.await.and_then(|x| x.grid);
         let mut rep = PollReport::default();
         let current = || Some(mon.lock().unwrap()).filter(|m| m.gen == gen);
-        let what = format!("history {}", LocalTs(d * 86_400).date());
+        let date = LocalTs(d * 86_400);
         match got {
             Ok(g) => {
                 if let Some(mut m) = current() {
@@ -806,11 +919,13 @@ pub async fn walk<S: Source>(src: Arc<tokio::sync::Mutex<S>>, mon: Arc<Mutex<Mon
                     }
                 }
                 (backoff, fails) = (WALK_BACKOFF, 0);
+                rep.oks.push(PAST);
                 report(rep);
                 tokio::time::sleep(WALK_GAP).await;
             }
             Err(SemsError::RateLimited) => {
-                failed(&mut rep, &what, SemsError::RateLimited);
+                let action = format!("history walk paused {} s", backoff.as_secs());
+                push(&mut rep, past_entry("sems+/day", date, &SemsError::RateLimited, &action));
                 if let Some(mut m) = current() {
                     m.walk.paused_until = m.station_now(Instant::now()).map(|t| t.plus_secs(backoff.as_secs() as i64));
                 }
@@ -823,7 +938,14 @@ pub async fn walk<S: Source>(src: Arc<tokio::sync::Mutex<S>>, mon: Arc<Mutex<Mon
             }
             Err(e) => {
                 let expired = e == SemsError::Expired;
-                failed(&mut rep, &what, e);
+                let action = if expired {
+                    "history walk waits for the next poll to log in again"
+                } else if fails + 1 >= WALK_FAILS {
+                    "day skipped; 3 failures in a row, history walk waits for the next poll"
+                } else {
+                    "day skipped, tried again on a later pass"
+                };
+                push(&mut rep, past_entry("sems+/day", date, &e, action));
                 if expired {
                     src.lock().await.plus_expired();
                 } else if let Some(mut m) = current() {
@@ -853,11 +975,12 @@ pub async fn run<S: Source>(
 ) {
     loop {
         mon.lock().unwrap().polling = true;
-        let rep = poll_once(&src, &mon, &mut on_report).await;
+        let mut rep = poll_once(&src, &mon, &mut on_report).await;
         // Before the report, whose redraw then shows the spin stopped.
         {
             let mut m = mon.lock().unwrap();
             (m.polling, m.user_poll) = (false, false);
+            rep.notes = m.stale_notes(Instant::now());
         }
         on_report(rep);
         tokio::select! {
@@ -935,6 +1058,62 @@ mod tests {
         assert!(m.stale(t));
         // the station clock moves on by the app clock
         assert_eq!(m.station_now(t + Duration::from_secs(300)).unwrap().hhmm(), "08:45");
+    }
+
+    #[test]
+    fn failure_entries_name_call_cause_and_action() {
+        let e = SemsError::Body("HTTP 200: error decoding response body".into());
+        let f = fail_entry("sems+/day", "today", &e, "a");
+        assert_eq!(f.line, "FAIL sems+/day today · body read failed (HTTP 200: error decoding response body) · action: a");
+        assert_eq!((f.kind.as_str(), f.reply), ("body read failed", None), "a cut body is not filed under network");
+        let e = SemsError::Parse { reason: "login refused, code 100002: The authorization has expired".into(), reply: "{}".into() };
+        let f = fail_entry("sems/login", "", &e, "a");
+        assert_eq!((f.line.as_str(), f.kind.as_str()), ("FAIL sems/login · unreadable reply: login refused, code 100002: The authorization has expired · action: a", "login refused, code 100002"));
+        let e = SemsError::Parse { reason: "field `info.time` unreadable: \"18/10\"".into(), reply: "{}".into() };
+        assert_eq!(fail_entry("sems/reading", "", &e, "a").line, "CHANGED sems/reading · API may have changed: sems reading unreadable info.time · action: a");
+        let e = SemsError::Parse { reason: "not JSON (HTTP 502): expected value at line 1 column 1".into(), reply: "<html>".into() };
+        assert_eq!(fail_entry("sems/reading", "", &e, "a").kind, "not JSON (HTTP 502)", "no position in the key, so repeats share it");
+        // a past day's failure is limited apart from today's call, unless it was a login
+        let d = LocalTs::parse("10/17/2026 00:00:00").unwrap();
+        assert_eq!(past_entry("sems+/day", d, &SemsError::RateLimited, "a").call, PAST);
+        assert_eq!(past_entry("sems+/login", d, &SemsError::Network("timeout".into()), "a").call, "sems+/login");
+    }
+
+    #[test]
+    fn stale_lines_once_each_way() {
+        let (t0, min) = (Instant::now(), |n: u64| Duration::from_secs(n * 60));
+        let mut m = Monitor::new(true);
+        let r = |t: &str| reading(&format!("10/18/2026 {t}:00"), GridSignal::On, 86.0, 0.0);
+        m.on_reading(r("08:20"), t0);
+        m.history_tried = true;
+        let today = day_of("10/18/2026 00:00:00");
+        m.history.insert(today, GridDay { newest: Some(8 * 60 + 18), ..Default::default() });
+        assert!(m.stale_notes(t0 + min(1)).is_empty());
+        // the live reading stops: one line, then quiet; history isn't judged while the reading is stale
+        assert_eq!(m.stale_notes(t0 + min(15)), ["STALE sems/reading · no new reading for 15 min, station time stuck at 08:20 · action: the panel shows the last reading as old"]);
+        assert!(m.stale_notes(t0 + min(40)).is_empty());
+        // it moves again; today's history now ends 22 min behind the station clock
+        m.on_reading(r("08:40"), t0 + min(20));
+        assert_eq!(m.stale_notes(t0 + min(20)), [
+            "OK sems/reading · new readings again (station time 08:40)",
+            "STALE sems+/day · today's history ends at 08:18, station time 08:40 · action: history shown up to then, asked again each poll",
+        ]);
+        assert!(m.stale_notes(t0 + min(22)).is_empty());
+        m.history.insert(today, GridDay { newest: Some(8 * 60 + 39), ..Default::default() });
+        assert_eq!(m.stale_notes(t0 + min(22)), ["OK sems+/day · today's history moving again (ends at 08:39)"]);
+        // three failed polls
+        (0..3).for_each(|_| m.on_failure());
+        assert_eq!(m.stale_notes(t0 + min(23)), ["STALE sems/reading · 3 failed polls in a row (last reading 08:40) · action: the panel shows the last reading as old"]);
+        // signed out: nothing, and no recovery line
+        m.reset(false);
+        assert!(m.stale_notes(t0 + min(60)).is_empty());
+        // no battery: no day calls, so no history line
+        let mut m = Monitor::new(true);
+        let mut nb = r("08:20");
+        nb.battery = None;
+        m.on_reading(nb, t0);
+        m.history_tried = true;
+        assert!(m.stale_notes(t0 + min(5)).is_empty());
     }
 
     #[test]
@@ -1016,6 +1195,7 @@ mod tests {
         read_at: Arc<Mutex<Vec<u64>>>,
         t0: tokio::time::Instant,
         expired: u32,
+        call: &'static str,
     }
 
     impl Source for Fake {
@@ -1048,7 +1228,11 @@ mod tests {
         fn station(&self) -> Option<String> {
             Some("station-a".into())
         }
+        fn call(&self) -> &'static str {
+            self.call
+        }
         async fn reading(&mut self) -> Result<Reading, SemsError> {
+            self.call = "sems/reading";
             *self.polls.lock().unwrap() += 1;
             self.read_at.lock().unwrap().push(self.t0.elapsed().as_secs());
             if let Some(g) = &self.gate {
@@ -1061,6 +1245,7 @@ mod tests {
             r
         }
         async fn day(&mut self, date: LocalTs, _: Option<f64>, _: bool) -> Result<Day, SemsError> {
+            self.call = "sems+/day";
             let d = date.day();
             self.days.lock().unwrap().push(d);
             let gate = self.plus_gate.clone();
@@ -1099,6 +1284,7 @@ mod tests {
             read_at: Default::default(),
             t0: tokio::time::Instant::now(),
             expired: 0,
+            call: "sems/reading",
         };
         (Arc::new(tokio::sync::Mutex::new(f)), polls)
     }
@@ -1108,6 +1294,8 @@ mod tests {
         let mut l = PollReport::default();
         let mut r = poll_once(src, mon, |x| l = x).await;
         (r.notice, r.disagreement, r.low_battery) = (l.notice, l.disagreement, l.low_battery);
+        r.oks.splice(0..0, l.oks);
+        r.fails.splice(0..0, l.fails);
         r
     }
 
@@ -1190,12 +1378,14 @@ mod tests {
         // cold start: today (same call as the chart) + 3 past days, newest first; yesterday fails
         // twice (call + one retry): skipped, and the older days still load (T-012)
         let rep = poll(&src, &mon).await;
-        assert_eq!(rep.errors, vec!["history 2026-10-17: network: timeout".to_owned()]);
+        let lines: Vec<_> = rep.fails.iter().map(|f| (f.call.as_str(), f.line.as_str())).collect();
+        assert_eq!(lines, [("sems+/history", "FAIL sems+/day 2026-10-17 · network: timeout · action: retried once, day skipped until the next poll")]);
+        assert_eq!(rep.oks, ["sems/login", "sems/reading", "sems+/login", "sems+/day", "sems+/history", "sems+/history"]);
         assert_eq!(take(), vec![today, today - 1, today - 1, today - 2, today - 3]);
         assert!(mon.lock().unwrap().history_tried);
         assert!(!mon.lock().unwrap().past_days_loaded(today));
         // the next poll: yesterday again, day −4 fails once and its retry gets it, then −5
-        assert!(poll(&src, &mon).await.errors.is_empty());
+        assert!(poll(&src, &mon).await.fails.is_empty());
         assert_eq!(take(), vec![today, today - 1, today - 4, today - 4, today - 5]);
         // three more polls for days −6 to −14
         for d in [today - 6, today - 9, today - 12] {
@@ -1220,7 +1410,11 @@ mod tests {
         let mon = Mutex::new(Monitor::new(true));
         let rep = poll(&src, &mon).await;
         assert_eq!(*days.lock().unwrap(), vec![today, today - 1, today - 2], "no retry on a bad reply; Expired ends the poll's history");
-        assert_eq!((rep.errors.len(), rep.bad_replies.len()), (2, 1));
+        let lines: Vec<_> = rep.fails.iter().map(|f| (f.line.as_str(), f.reply.is_some())).collect();
+        assert_eq!(lines, [
+            ("FAIL sems+/day 2026-10-17 · unreadable reply: code X · action: day skipped until the next poll", true),
+            ("FAIL sems+/day 2026-10-16 · session expired · action: past days stopped until the next poll", false),
+        ]);
     }
 
     #[test]
@@ -1560,7 +1754,11 @@ mod tests {
         let take = || std::mem::take(&mut *days.lock().unwrap());
         let wake = Arc::new(Notify::new());
         let mon = Arc::new(Mutex::new(m));
-        let w = tokio::spawn(walk(src.clone(), mon.clone(), wake.clone(), |_| {}));
+        let log = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let l = log.clone();
+        let w = tokio::spawn(walk(src.clone(), mon.clone(), wake.clone(), move |r: PollReport| {
+            l.lock().unwrap().extend(r.fails.into_iter().map(|f| (f.call, f.line)).chain(r.oks.iter().map(|c| (c.to_string(), "ok".into()))))
+        }));
         let step = || async {
             tokio::time::sleep(Duration::from_secs(60)).await;
             take()
@@ -1568,6 +1766,14 @@ mod tests {
         assert_eq!(step().await, vec![today - 1, today - 2, today - 3], "3 failures in a row: stop");
         wake.notify_one(); // the next poll
         assert_eq!(step().await, vec![today - 4], "the failed days wait for a later pass; Expired waits for the poll's sign-in");
+        // T-026: one line per failure with its date and what the walk did, under the past-days key
+        let date = |n: i64| LocalTs((today - n) * 86_400).date();
+        assert_eq!(*log.lock().unwrap(), [
+            ("sems+/history".into(), format!("FAIL sems+/day {} · network: timeout · action: day skipped, tried again on a later pass", date(1))),
+            ("sems+/history".into(), format!("FAIL sems+/day {} · network: timeout · action: day skipped, tried again on a later pass", date(2))),
+            ("sems+/history".into(), format!("FAIL sems+/day {} · network: timeout · action: day skipped; 3 failures in a row, history walk waits for the next poll", date(3))),
+            ("sems+/history".into(), format!("FAIL sems+/day {} · session expired · action: history walk waits for the next poll to log in again", date(4))),
+        ]);
         assert_eq!(src.lock().await.expired, 1);
         wake.notify_one();
         assert_eq!(step().await, vec![today - 4]);
@@ -1638,19 +1844,30 @@ mod tests {
             vec![Ok(ChartSeries { day: 0, points: vec![] }), Err(bad()), Err(SemsError::Network("x".into()))],
         );
         let mon = Mutex::new(Monitor::new(true));
-        assert_eq!(poll(&src, &mon).await, PollReport::default());
+        let lines = |r: &PollReport| r.fails.iter().map(|f| f.line.clone()).collect::<Vec<_>>();
         let r = poll(&src, &mon).await;
-        assert!(r.disagreement.unwrap().contains("vac1 230"));
+        assert_eq!((r.fails.len(), r.notice.is_none()), (0, true));
+        assert_eq!(r.oks[..4], ["sems/login", "sems/reading", "sems+/login", "sems+/day"]);
+        let r = poll(&src, &mon).await;
+        assert!(r.disagreement.as_ref().unwrap().contains("vac1 230"));
         // T-004: today's one reply fails both chart and grid: dumped once, logged twice.
-        assert_eq!(r.bad_replies.len(), 1, "the chart's bad reply is reported once");
-        assert_eq!(r.errors.len(), 2);
+        assert_eq!(r.fails.iter().filter(|f| f.reply.is_some()).count(), 1, "the chart's bad reply is dumped once");
+        assert_eq!(lines(&r), [
+            "CHANGED sems+/day today's chart · API may have changed: sems+ day missing invert_full.vac1 · action: chart drawn from the app's own readings",
+            "CHANGED sems+/day today's history · API may have changed: sems+ day missing invert_full.vac1 · action: today's history kept as it was",
+        ]);
+        assert!(!r.oks.contains(&"sems+/day"), "a day reply with a missing field is not a working call");
         let r = poll(&src, &mon).await;
-        assert_eq!(r.notice.unwrap().text(), "Grid is off · battery 86%");
+        assert_eq!(r.notice.as_ref().unwrap().text(), "Grid is off · battery 86%");
+        assert_eq!(lines(&r), ["FAIL sems+/day today · network: x · action: chart drawn from the app's own readings, today's history kept as it was"]);
         let r = poll(&src, &mon).await;
-        assert_eq!(r.bad_replies[0].0, "field `invert_full.vac1` missing");
-        poll(&src, &mon).await;
+        assert_eq!(lines(&r), ["CHANGED sems/reading · API may have changed: sems reading missing invert_full.vac1 · action: kept the last reading, next poll in 2 min"]);
+        assert_eq!((r.fails[0].call.as_str(), r.fails[0].kind.as_str(), r.fails[0].reply.as_deref()), ("sems/reading", "API may have changed: sems reading missing invert_full.vac1", Some("{}")));
+        let r = poll(&src, &mon).await;
+        assert_eq!(lines(&r), ["FAIL sems/reading · network: timeout · action: kept the last reading, next poll in 2 min"]);
         assert_eq!(mon.lock().unwrap().failures, 2);
-        poll(&src, &mon).await;
+        let r = poll(&src, &mon).await;
+        assert_eq!(lines(&r), ["FAIL sems/reading · login refused: Email or password error · action: signed out, the panel asks to sign in"]);
         assert!(!mon.lock().unwrap().signed_in);
         assert!(!src.lock().await.signed_in);
         // signed out: no more calls to SEMS

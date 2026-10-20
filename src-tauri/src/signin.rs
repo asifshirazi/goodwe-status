@@ -113,10 +113,7 @@ pub async fn signin_submit(app: AppHandle, email: String, password: String) -> R
     app.state::<SignIn>().cancel.lock().unwrap().take();
     let dir = app.state::<shell::Shell>().log_dir.clone();
     if let Err(e) = res {
-        logdir::line(&dir, &format!("sign-in failed: {e}"));
-        if let SemsError::Parse { reason, reply } = &e {
-            logdir::dump_bad_reply(&dir, reason, reply);
-        }
+        logdir::fail(&dir, &crate::monitor::fail_entry("sems/login", "(sign-in box)", &e, "the sign-in box shows why"));
         return Err(message(&e).into());
     }
     // Accepted, and Cancel can no longer stop it (its sender is gone).

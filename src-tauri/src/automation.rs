@@ -144,6 +144,8 @@ pub struct Hooks {
     pub changed: Box<dyn Fn() + Send + Sync>,
     /// One log line (never ids, names or keys).
     pub log: Box<dyn Fn(&str) + Send + Sync>,
+    /// A missing-field failure with its reply: `logdir::fail` (rate-limited, the reply dumped redacted).
+    pub fail: Box<dyn Fn(&crate::logdir::Fail) + Send + Sync>,
     /// Some while the grid is known now (live On or Off, not stale).
     pub grid_now: Box<dyn Fn() -> Option<GridNow> + Send + Sync>,
 }
@@ -218,7 +220,8 @@ pub fn connect_error(e: &TuyaError, list_call: bool, dc: &str) -> String {
         TuyaError::Network | TuyaError::Timeout => "Can’t reach Tuya. Check your internet connection.".into(),
         e if !list_call || e.keys_refused() => "Tuya didn’t accept this Access ID and Secret.".into(),
         TuyaError::Code(c) => format!("Tuya answered with error {c}."),
-        TuyaError::BadReply => "Tuya answered with error 0.".into(),
+        TuyaError::Http(s) => format!("Tuya answered with error {s}."),
+        TuyaError::BadReply | TuyaError::Missing(..) => "Tuya answered with error 0.".into(),
     }
 }
 fn wrong_dc(dc: &str) -> String {
@@ -228,6 +231,16 @@ const KEYS_NOT_SAVED: &str = "Couldn’t save the keys in your Keychain.";
 const NO_DEVICES: &str = "No devices in this project. Link your Smart Life app to it, then connect again.";
 const KEYS_REJECTED: &str = "Tuya didn’t accept the saved keys. Enter the Secret again.";
 const PLAN_EXPIRED: &str = "Your Tuya cloud plan has expired. Extend it on platform.tuya.com. Your keys stay the same.";
+
+/// Logs a Tuya failure. A missing field (the API may have changed) goes through `fail` with its
+/// reply, so it is rate-limited and dumped redacted like SEMS (T-026 D-O1); the rest are plain lines.
+fn log_err(hooks: &Hooks, e: &TuyaError, call: &str, what: &str, action: &str) {
+    let line = e.log_line(call, what, action);
+    match e {
+        TuyaError::Missing(f, reply) => (hooks.fail)(&crate::logdir::Fail { call: format!("tuya/{call}"), kind: format!("missing {f}"), line, reply: Some(reply.clone()) }),
+        _ => (hooks.log)(&line),
+    }
+}
 
 /// `work_mode=music`, `switch_fan=true`: what the log says (no id, no name).
 fn log_action(a: &Action) -> String {
@@ -511,7 +524,7 @@ impl Automation {
             }
             let t0 = Instant::now();
             let r = client.send(&id, &a).await;
-            let head = format!("tuya: device {n} of {total} → {}", log_action(&a));
+            let head = format!(" device {n} of {total} → {}", log_action(&a));
             me.finish(&id, gen, a, at, r, head, t0.elapsed().as_secs_f32());
         }));
     }
@@ -530,11 +543,10 @@ impl Automation {
 
     #[allow(clippy::too_many_arguments)]
     fn finish(&self, id: &str, gen: u64, action: Action, at: LocalTs, r: Result<(), TuyaError>, log_head: String, secs: f32) {
-        let line = match &r {
-            Ok(()) => format!("{log_head}: ok ({secs:.1} s)"),
-            Err(e) => format!("{log_head}: failed {}", e.short()),
-        };
-        (self.hooks.log)(&line);
+        match &r {
+            Ok(()) => (self.hooks.log)(&format!("tuya:{log_head}: ok ({secs:.1} s)")),
+            Err(e) => log_err(&self.hooks, e, "command", &log_head, "Settings shows it under the device"),
+        }
         {
             let mut st = self.st.lock().unwrap();
             let problem = st.problem;
@@ -674,6 +686,7 @@ impl Automation {
                     // 2009: no standard functions (an RF fan, seen live).
                     Err(TuyaError::Code(2009)) => st.add_err = Some(format!("{} has nothing to switch.", dev.name)),
                     Err(e) => {
+                        log_err(&me.hooks, &e, "choices", " (Add Device)", "device not added, Settings shows why");
                         st.add_err = Some(format!("Couldn’t load what {} can do: {}.", dev.name, e.reason()));
                         Self::note_problem(&mut st, &e);
                     }
@@ -719,6 +732,7 @@ impl Automation {
                         }
                     }
                     Err(e) => {
+                        log_err(&me.hooks, &e, "devices", "", "Settings shows the device list as failed; saved devices still switch");
                         st.devices = Devices::Failed;
                         Self::note_problem(&mut st, &e);
                     }
@@ -747,9 +761,15 @@ impl Automation {
         (self.hooks.changed)();
         let dc = keys.region.clone();
         let r = match client.token().await {
-            Err(e) => Err(connect_error(&e, false, &dc)),
+            Err(e) => {
+                log_err(&self.hooks, &e, "token", " (Connect)", "not connected, the form shows why");
+                Err(connect_error(&e, false, &dc))
+            }
             Ok(_) => match client.devices().await {
-                Err(e) => Err(connect_error(&e, true, &dc)),
+                Err(e) => {
+                    log_err(&self.hooks, &e, "devices", " (Connect)", "not connected, the form shows why");
+                    Err(connect_error(&e, true, &dc))
+                }
                 Ok(d) if d.is_empty() => Err(NO_DEVICES.to_owned()),
                 Ok(d) => Ok(d),
             },
@@ -891,6 +911,8 @@ mod tests {
         auto: Arc<Automation>,
         log: Log,
         lines: Arc<Mutex<Vec<String>>>,
+        /// The replies handed to `fail` for a dump (missing fields).
+        dumps: Arc<Mutex<Vec<String>>>,
         /// The grid is off now, for this many seconds; GRID_ON; else (< 0) Unknown or stale.
         off_for: Arc<AtomicI64>,
     }
@@ -934,12 +956,17 @@ mod tests {
         let (base, log) = stub::start(answer).await;
         let lines: Arc<Mutex<Vec<String>>> = Arc::default();
         let off_for = Arc::new(AtomicI64::new(-1));
-        let (l2, o2) = (lines.clone(), off_for.clone());
+        let dumps: Arc<Mutex<Vec<String>>> = Arc::default();
+        let (l2, o2, l3, d3) = (lines.clone(), off_for.clone(), lines.clone(), dumps.clone());
         let auto = Automation::new(
             None,
             Hooks {
                 changed: Box::new(|| {}),
                 log: Box::new(move |s| l2.lock().unwrap().push(s.to_owned())),
+                fail: Box::new(move |f| {
+                    l3.lock().unwrap().push(f.line.clone());
+                    d3.lock().unwrap().extend(f.reply.clone());
+                }),
                 grid_now: Box::new(move || {
                     let (s, at) = (o2.load(Ordering::SeqCst), LocalTs::parse(AT).unwrap());
                     match s {
@@ -958,7 +985,7 @@ mod tests {
         let mut c = Client::with_base(base, &keys());
         c.retry_wait = Duration::from_millis(10);
         auto.set_client(Some(keys()), Some(Arc::new(c)));
-        T { auto, log, lines, off_for }
+        T { auto, log, lines, dumps, off_for }
     }
 
     /// Answers like Tuya: token, then `cmd` for every command, a list and choices for reads.
@@ -1552,13 +1579,68 @@ mod tests {
         let mut lines = t.lines.lock().unwrap().clone();
         lines.sort();
         assert_eq!(lines.len(), 2);
-        assert!(lines[0].starts_with("tuya: device 1 of 2 → work_mode=music: ok ("), "{}", lines[0]);
-        assert_eq!(lines[1], "tuya: device 2 of 2 → switch_fan=true: failed 2001");
+        assert_eq!(lines[0], "FAIL tuya/command device 2 of 2 → switch_fan=true · code 2001 (offline) · action: Settings shows it under the device");
+        assert!(lines[1].starts_with("tuya: device 1 of 2 → work_mode=music: ok ("), "{}", lines[1]);
         for l in &lines {
             for bad in ["dev-", "Table", "Fan"] {
                 assert!(!l.contains(bad), "{l}");
             }
         }
+    }
+
+    /// T-026: token, device list and Add Device failures reach the log, with no key, token, id or name.
+    #[tokio::test]
+    async fn tuya_failures_reach_the_log_without_secrets() {
+        let no_secret = |lines: &[String]| {
+            for l in lines {
+                for bad in ["the-access-id", "the-secret-value", "dev-", "Table", "Fan", "\"t\""] {
+                    assert!(!l.contains(bad), "{bad} in {l}");
+                }
+            }
+        };
+        // the device list (Settings' Automation pane) answers a shape the app can't read
+        let lines_after = |t: &T, n: usize| {
+            let l = t.lines.clone();
+            async move {
+                for _ in 0..300 {
+                    if l.lock().unwrap().len() >= n {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                l.lock().unwrap().clone()
+            }
+        };
+        let t = setup(vec![], false, |r, _| (0, if r.path.starts_with("/v1.0/token") { token("t") } else { ok(r#"{"list":[]}"#) })).await;
+        t.auto.refresh_devices();
+        let lines = lines_after(&t, 1).await;
+        assert_eq!(lines, ["CHANGED tuya/devices · API may have changed: tuya devices missing result.devices · action: Settings shows the device list as failed; saved devices still switch"]);
+        no_secret(&lines);
+        assert_eq!(*t.dumps.lock().unwrap(), [r#"{"list":[]}"#], "the reply goes to logdir::fail for the redacted dump (D-O1)");
+        // Connect: the token is refused, then the list says wrong data center
+        let (base, _) = stub::start(|_, _| (0, fail(1004))).await;
+        t.auto.connect_with(keys(), Client::with_base(base, &keys())).await.unwrap_err();
+        let (base, _) = stub::start(|r, _| (0, if r.path.starts_with("/v1.0/token") { token("t") } else { fail(28841107) })).await;
+        t.auto.connect_with(keys(), Client::with_base(base, &keys())).await.unwrap_err();
+        let lines = t.lines.lock().unwrap().clone();
+        assert_eq!(lines[1..], [
+            "FAIL tuya/token (Connect) · code 1004 (Tuya refused the keys) · action: not connected, the form shows why".to_owned(),
+            "FAIL tuya/devices (Connect) · code 28841107 (error 28841107) · action: not connected, the form shows why".to_owned(),
+        ]);
+        no_secret(&lines);
+        // Add Device: its functions call fails (after the one busy retry)
+        let t = setup(vec![], true, |r, _| (0, if r.path.starts_with("/v1.0/token") { token("t") } else if r.path.ends_with("/functions") { fail(1199) } else { ok(r#"{"devices":[{"id":"dev-a","name":"Table LED","category":"dd","online":true}],"has_more":false}"#) })).await;
+        t.auto.refresh_devices();
+        for _ in 0..100 {
+            if matches!(t.auto.view(true).add, AddView::Items(_)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        t.auto.add(0);
+        let lines = lines_after(&t, 1).await;
+        assert_eq!(lines, ["FAIL tuya/choices (Add Device) · code 1199 (Tuya was busy), after one retry · action: device not added, Settings shows why"]);
+        no_secret(&lines);
     }
 
     #[tokio::test]
