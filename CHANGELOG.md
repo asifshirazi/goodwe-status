@@ -13,6 +13,7 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 - "Usually back around …" stays once its time has passed while the grid is still off, so you can see the grid is later than usual; it goes when the grid comes back. Before, it disappeared or jumped to a later time.
 - Settings › Automation also says what turning a device on does while the grid is on ("The grid is on now: turning a device on sets its Grid on choice."), not only while it is off.
 - Every part of the power-cut strip (in the panel and in Stats) now has a card like the red cuts: point at it, or Tab, then ← →, to see when the grid was on, or when SEMS had no data, with the times and how long. The hours after now have none.
+- Settings › About: the Source code row now shows the GitHub mark beside its label, in the text colour in light and dark.
 
 ### Fixed
 - Power cuts show again in the panel and in Stats. Since 19 October SEMS sends no grid reading during a cut, so the app saw no cut and history looked stuck; it now reads cuts without that reading, and fetches days saved without their cuts once more. A cut is also drawn when the app starts while the grid is already off.
