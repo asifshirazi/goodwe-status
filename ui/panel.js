@@ -17,7 +17,7 @@
                //   (the Settings switch is off, or neither reading is real).
                // Temp = { text: '36°C' (whole degrees, U+2212 minus), level: 0..1 (place on its scale),
                //          state: 'ok' | 'warm' | 'hot' | 'cold', trend?: 'up' | 'down' (±2 °C over 30 min of own readings) }
-     updated:  null | { stale: bool, text: 'Updated 8:20 AM' | 'No new data since 8:20 AM' },  // T-002: Rust appends ' · refreshing…' while refreshing
+     updated:  null | { stale: bool, text: 'Updated 8:20 AM' | 'No new data since 8:20 AM' },  // T-024: shown in the footer; while refreshing it reads Refreshing…
      notificationsOff: bool,
      chart:    null | { status: 'ok'|'loading'|'empty'|'failed'|'fallback', since?: '7:58 AM' (fallback, only when the app started today),
                         day: '18 Oct' (T-002, station-local date for the hover read-out),
@@ -46,7 +46,6 @@
     plug: () => `<svg viewBox="0 0 18 18" fill="currentColor">${PLUG}</svg>`,
     plugoff: () => { const id = 'gwk' + (++uid); return `<svg viewBox="0 0 18 18" fill="currentColor"><defs><mask id="${id}" maskUnits="userSpaceOnUse" x="0" y="0" width="18" height="18"><rect width="18" height="18" fill="#fff"/><path d="M2.25 2.25L15.75 15.75" stroke="#000" stroke-width="4.1" stroke-linecap="round"/></mask></defs><g mask="url(#${id})">${PLUG}</g><path d="M2.25 2.25L15.75 15.75" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`; },
     battery: () => `<svg viewBox="0 0 16 16" ${S}><rect x="1.5" y="4.5" width="11" height="7" rx="1.8"/><path d="M14.5 7v2"/></svg>`,
-    clock: () => `<svg viewBox="0 0 16 16" ${S}><circle cx="8" cy="8" r="6"/><path d="M8 4.8V8l2.2 1.4"/></svg>`,
     warn: () => `<svg viewBox="0 0 16 16" ${S}><path d="M8 2.2l6.2 11H1.8z"/><path d="M8 6.6v3"/><path d="M8 11.5v.1"/></svg>`,
     bellslash: () => `<svg viewBox="0 0 16 16" ${S}><path d="M4 11.2V7.6a4 4 0 0 1 6.9-2.8M12 7.6v3.6l1 1.3H5"/><path d="M6.6 14h2.8"/><path d="M2.5 2.5l11 11"/></svg>`,
     bell: () => `<svg viewBox="0 0 16 16" ${S}><path d="M4 11.2V7.6a4 4 0 0 1 8 0v3.6l1 1.3H3z"/><path d="M6.6 14h2.8"/></svg>`,
@@ -257,9 +256,6 @@
     if (t && (t.inverter || t.battery)) out.push(`<section class="gw-sec gw-temps" aria-label="Temperatures"><div class="gw-row">${ic('thermo')}`
       + pair('Inverter', t.inverter) + pair('Battery', t.battery) + `</div></section>`);
 
-    const u = st.updated;
-    if (u) out.push(`<section class="gw-sec gw-note${u.stale ? ' is-stale' : ''}"><div class="gw-row">${u.stale ? ic('warn', 'is-strong') : ic('clock')}<span class="gw-title"${u.stale ? '' : ' style="color:var(--gw-label-2)"'}>${esc(u.text)}</span></div></section>`);
-
     if (st.notificationsOff) out.push(`<section class="gw-sec"><div class="gw-row">${ic('bellslash', 'is-strong')}<span class="gw-title">Notifications are off</span></div><p class="gw-sub">You won’t hear when the grid goes off.</p></section>`);
 
     const c = st.chart;
@@ -271,13 +267,18 @@
         + chartSVG(c) + (cap ? `<p class="gw-caption">${cap}</p>` : '') + `</section>`);
     }
 
+    // T-024: action rows only for what the panel needs right now (Turn On Notifications…, Sign In…); Settings and Quit
+    // are icon buttons on one footer row with the last update between them (the old "Updated" section).
     const acts = [];
-    if (st.notificationsOff) acts.push(['notif', 'bell', 'Turn On Notifications…', '']);
-    // The account, Sign Out and the log folder live in Settings. The footer keeps Settings… and Quit, plus Sign In…
-    // only while signed out (the panel is empty without it, so the way in stays one click away).
-    if (!st.signedIn) acts.push(['signin', 'person', 'Sign In…', '']);
-    acts.push(['settings', 'gear', 'Settings…', '⌘,'], ['quit', 'power', 'Quit', '⌘Q']);
-    out.push(`<nav class="gw-actions" aria-label="Actions">${acts.map(([id, icon, t, k, dis]) => `<button class="gw-act" data-action="${id}"${dis ? ' aria-disabled="true" tabindex="-1"' : ''}>${ic(icon)}<span>${t}</span>${k ? `<span class="k">${k}</span>` : ''}</button>`).join('')}</nav>`);
+    if (st.notificationsOff) acts.push(['notif', 'bell', 'Turn On Notifications…']);
+    if (!st.signedIn) acts.push(['signin', 'person', 'Sign In…']);
+    if (acts.length) out.push(`<nav class="gw-actions" aria-label="Actions">${acts.map(([id, icon, t]) => `<button class="gw-act" data-action="${id}">${ic(icon)}<span>${t}</span></button>`).join('')}</nav>`);
+    const u = st.updated;
+    const foot = (id, icon, label, tip, keys) => `<button class="gw-icon-btn" data-action="${id}" aria-label="${label}" aria-keyshortcuts="${keys}" title="${tip}">${ic(icon)}</button>`;
+    // Empty while signed out and before the first reading: the first row already says so.
+    const when = u && st.refreshing ? '<p class="gw-when"><span>Refreshing…</span></p>'
+      : u ? `<p class="gw-when${u.stale ? ' is-stale' : ''}">${u.stale ? ic('warn') : ''}<span>${esc(u.text)}</span></p>` : '<p class="gw-when"></p>';
+    out.push(`<footer class="gw-foot">${foot('settings', 'gear', 'Settings', 'Settings (⌘,)', 'Meta+,')}${when}${foot('quit', 'power', 'Quit GoodWe Status', 'Quit GoodWe Status (⌘Q)', 'Meta+Q')}</footer>`);
 
     return `<div class="gw-panel" role="dialog" aria-label="GoodWe Status">${out.join('')}</div>`;
   }

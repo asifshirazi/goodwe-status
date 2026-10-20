@@ -46,7 +46,7 @@
   // focus restore above, which serves re-renders while it is open.
   window.addEventListener('focus', () => {
     if (document.activeElement) document.activeElement.blur();
-    // A hidden window gets no mouse-exit: the row last clicked (Settings…) would keep :hover.
+    // A hidden window gets no mouse-exit: the button last clicked (Settings) would keep :hover.
     // Rows light on hover again after the pointer really moves in the panel (T-013 item 6).
     root.classList.add('gw-still');
   });
@@ -57,7 +57,8 @@
     [px, py] = [e.clientX, e.clientY];
   });
 
-  const enabled = () => [...root.querySelectorAll('.gw-act:not([aria-disabled="true"])')];
+  // T-024: ↑ / ↓ walk the action rows, then the footer's Settings and Quit.
+  const enabled = () => [...root.querySelectorAll('.gw-act:not([aria-disabled="true"]), .gw-foot .gw-icon-btn')];
   const run = id => {
     if (id === 'refresh' && !(state && state.signedIn && !state.refreshing)) return; // disabled signed out; one poll at a time
     invoke('panel_action', { id });

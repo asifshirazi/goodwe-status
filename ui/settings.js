@@ -7,7 +7,7 @@
   const DC = ['Central Europe', 'Western Europe', 'Western America', 'Eastern America', 'China', 'India'];
   const S = 'fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"';
   const MINUS = `<svg viewBox="0 0 14 14" ${S}><circle cx="7" cy="7" r="5.8"/><path d="M4.4 7h5.2"/></svg>`;
-  // Toolbar glyphs, 22 pt, same stroke family as the panel's icons (gear = the panel's Settings… icon).
+  // Toolbar glyphs, 22 pt, same stroke family as the panel's icons (gear = the panel's Settings icon).
   const GEAR = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"><path d="M14.22 7.00L14.22 9.00L12.77 9.13L12.17 10.57L13.11 11.69L11.69 13.11L10.57 12.17L9.13 12.77L9.00 14.22L7.00 14.22L6.87 12.77L5.43 12.17L4.31 13.11L2.89 11.69L3.83 10.57L3.23 9.13L1.78 9.00L1.78 7.00L3.23 6.87L3.83 5.43L2.89 4.31L4.31 2.89L5.43 3.83L6.87 3.23L7.00 1.78L9.00 1.78L9.13 3.23L10.57 3.83L11.69 2.89L13.11 4.31L12.17 5.43L12.77 6.87Z"/><circle cx="8" cy="8" r="2.1"/></svg>';
   const BOLT = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"><path d="M9.2 1.6L3.6 9.1h4.1l-1 5.3 5.7-7.6H8.3z"/></svg>';
   // T-015: bars, the same 16 grid and 1.1 stroke (SF Symbols' chart.bar).

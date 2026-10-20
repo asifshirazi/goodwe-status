@@ -189,12 +189,8 @@ pub fn panel(m: &Monitor, now: Instant, notifications_off: bool) -> PanelState {
     let refreshing = m.user_poll && m.signed_in;
     let updated = shown.map(|r| Updated {
         stale,
-        text: format!(
-            "{} {}{}",
-            if stale { "No new data since" } else { "Updated" },
-            r.time.hhmm12(),
-            if refreshing { " · refreshing…" } else { "" }
-        ),
+        // T-024: no " · refreshing…" suffix; the footer shows Refreshing… from `refreshing` instead.
+        text: format!("{} {}", if stale { "No new data since" } else { "Updated" }, r.time.hhmm12()),
     });
     PanelState {
         status: status(m, now),
@@ -808,14 +804,14 @@ mod tests {
     }
 
     #[test]
-    fn refreshing_marks_freshness_line() {
+    fn refreshing_keeps_freshness_text() {
         let (mut m, now) = live(&[("2026-10-18 11:22", ON)]);
         assert_eq!(m.ask_refresh(), Some(true));
         let p = panel(&m, now, false);
         assert!(p.refreshing);
-        assert_eq!(p.updated.unwrap().text, "Updated 11:22\u{a0}AM · refreshing…");
+        assert_eq!(p.updated.unwrap().text, "Updated 11:22\u{a0}AM");
         let p = panel(&m, now + 15 * MIN, false);
-        assert_eq!(p.updated.unwrap().text, "No new data since 11:22\u{a0}AM · refreshing…");
+        assert_eq!(p.updated.unwrap().text, "No new data since 11:22\u{a0}AM");
         m.user_poll = false;
         let p = panel(&m, now, false);
         assert!(!p.refreshing);

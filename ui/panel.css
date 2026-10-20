@@ -51,8 +51,6 @@
 .gw-sub{font-size:12px;color:var(--gw-label-2);margin-top:2px !important;padding-left:24px}
 .gw-hero{margin-top:var(--gw-s2) !important;padding-left:24px;font-size:13px;color:var(--gw-label-2)}
 .gw-hero b{font-size:22px;line-height:26px;font-weight:600;color:var(--gw-label);letter-spacing:-.2px;margin-right:4px}
-.gw-note .gw-title{font-weight:400}
-.gw-note.is-stale .gw-title{font-weight:600}
 
 /* Chart */
 .gw-chart-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--gw-s2);margin-bottom:var(--gw-s1)}
@@ -89,7 +87,9 @@
 .gw-icon-btn{all:unset;flex:none;display:grid;place-items:center;width:24px;height:24px;margin:-2px -6px -2px 0;border-radius:var(--gw-row-radius);
   color:var(--gw-label-2);transition:background-color var(--gw-press) ease-out,scale var(--gw-press) ease-out}
 .gw-icon-btn .gw-ic{color:inherit}
-@media (hover:hover){ .gw-icon-btn:not([aria-disabled="true"]):hover{background:var(--gw-fill-hover);color:var(--gw-label)} }
+/* T-024: no hover until the pointer really moves (#root.gw-still, T-013): a click on Settings or Quit hides the panel
+   with the pointer on the button. :not(:active) lets the press fill win over this rule's higher specificity (T-023). */
+@media (hover:hover){ #root:not(.gw-still) .gw-icon-btn:not([aria-disabled="true"]):hover:not(:active){background:var(--gw-fill-hover);color:var(--gw-label)} }
 .gw-icon-btn:not([aria-disabled="true"]):active{background:var(--gw-fill-press);color:var(--gw-label)}
 @media (prefers-reduced-motion:no-preference){ .gw-icon-btn:not([aria-disabled="true"]):active{scale:.96} }
 .gw-icon-btn:focus-visible{outline:2px solid var(--gw-focus);outline-offset:0}
@@ -173,3 +173,18 @@
 .gw-strip .gw-tip{top:16px;max-width:220px} /* under the bar, over the hour labels */
 .gw-tip-row i.off{background:var(--gw-red)}
 @media (forced-colors:active){ .gw-strip .cut{fill:Highlight} .gw-strip-plot:focus-visible{outline-color:Highlight} }
+
+/* ---- T-024 · Footer: Settings · last update · Quit on one 24 pt row ----
+   The two buttons are the Refresh button (.gw-icon-btn: 24 pt target, 16 pt glyph, hover / press / focus / motion).
+   Left 8 = 12 − 4, so the gear's glyph sits on the icon column; right 6 = 12 − 6, so the power glyph sits under Refresh's.
+   The text is centred between them (1 pt left of the panel's centre, by the 2 pt asymmetry). */
+.gw-foot{position:relative;display:grid;grid-template-columns:24px minmax(0,1fr) 24px;align-items:center;column-gap:var(--gw-s2);
+  margin-top:2px;padding:6px 6px 0 8px}
+.gw-foot::before{content:"";position:absolute;top:0;left:var(--gw-s3);right:var(--gw-s3);height:1px;background:var(--gw-separator)}
+.gw-actions + .gw-foot{margin-top:6px} /* under action rows too: its own hairline, so the icons never read as a third row */
+.gw-foot .gw-icon-btn{margin:0}
+.gw-when{display:flex;align-items:center;justify-content:center;gap:var(--gw-s1);min-width:0;
+  font-size:12px;line-height:16px;color:var(--gw-label-2);white-space:nowrap}
+.gw-when span{overflow:hidden;text-overflow:ellipsis}
+.gw-when .gw-ic{width:14px;height:14px;color:var(--gw-label)}
+.gw-when.is-stale{color:var(--gw-label);font-weight:600}
