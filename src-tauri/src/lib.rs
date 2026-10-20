@@ -14,6 +14,7 @@ pub mod shell;
 pub mod signin;
 pub mod stats;
 pub mod tuya;
+pub mod updater;
 pub mod view;
 
 use std::sync::{Arc, Mutex};
@@ -37,6 +38,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             shell::panel_height,
             shell::panel_action,
@@ -55,6 +57,7 @@ pub fn run() {
             let log_dir = app.path().app_log_dir()?;
             app.manage(signin::SignIn::default());
             app.manage(settings::Settings::default());
+            app.manage(updater::Updater::new(app.handle(), log_dir.clone()));
             // "Getting the first reading…" until the Keychain has answered.
             let mon = Arc::new(Mutex::new(monitor::Monitor::new(true)));
             let client = Arc::new(tokio::sync::Mutex::new(sems::Client::new(None)));
@@ -108,6 +111,8 @@ pub fn run() {
             }
             // The tray item first: a Keychain prompt must never hold up the menu bar.
             shell::setup(app, log_dir.clone())?;
+            // Silent: About and the gear's dot show what it found (T-022: no notification, no download).
+            updater::check(app.handle());
             // The close button hides Settings (one instance, opened again by Settings…).
             let h = app.handle().clone();
             app.get_webview_window("settings").expect("settings window in tauri.conf.json").on_window_event(move |e| {

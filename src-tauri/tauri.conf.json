@@ -34,7 +34,15 @@
     "active": true,
     "targets": ["app"],
     "category": "Utility",
+    "createUpdaterArtifacts": true,
     "icon": ["icons/app-icon-32.png", "icons/app-icon-128.png", "icons/icon.icns"],
     "macOS": { "minimumSystemVersion": "12.0", "signingIdentity": "GoodWe Status Local Signing" }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdDRTY3RUI3NkNGQzYxNzAKUldSd1lmeHN0MzdtZklBVUlrT3UvU0JyaUZNVm1ocm11bWVZV2E2bVRoOUZISkVPSlRXNk1MTkcK",
+      "endpoints": ["https://github.com/asifshirazi/goodwe-status/releases/latest/download/latest.json"],
+      "requireSignedVersion": true
+    }
   }
 }

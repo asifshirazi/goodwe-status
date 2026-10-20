@@ -23,6 +23,8 @@ pub struct PanelState {
     pub temps: Option<TempsView>,
     /// T-020 § 3: today's cut strip; `null` when the switch is off, signed out or no battery.
     pub cuts: Option<crate::stats::Cuts>,
+    /// T-022: a newer version waits (the gear's dot); set by the shell from the updater.
+    pub update_available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -203,6 +205,7 @@ pub fn panel(m: &Monitor, now: Instant, notifications_off: bool) -> PanelState {
         refreshing,
         temps: shown.filter(|_| m.show_temps).and_then(|r| temps(m, r, stale)),
         cuts: if m.show_cuts { crate::stats::today(m, now) } else { None },
+        update_available: false,
     }
 }
 

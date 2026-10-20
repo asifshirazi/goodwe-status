@@ -128,11 +128,12 @@ fn hide(app: &AppHandle, give_back_focus: bool) {
 pub fn refresh(app: &AppHandle) {
     let shell = app.state::<Shell>();
     let now = Instant::now();
-    let (panel, look) = {
+    let (mut panel, look) = {
         let mon = app.state::<Arc<Mutex<Monitor>>>();
         let m = mon.lock().unwrap();
         (view::panel(&m, now, shell.notifications_off.load(Ordering::Relaxed)), view::tray(&m, now))
     };
+    panel.update_available = app.try_state::<crate::updater::Updater>().is_some_and(|u| u.available());
     let mut applied = shell.applied.lock().unwrap();
     if let (Some(tray), true) = (app.tray_by_id(TRAY), applied.as_ref() != Some(&look)) {
         // Icon and template flag in one call: two calls flicker.

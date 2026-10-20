@@ -17,6 +17,7 @@
                //   (the Settings switch is off, or neither reading is real).
                // Temp = { text: '36°C' (whole degrees, U+2212 minus), level: 0..1 (place on its scale),
                //          state: 'ok' | 'warm' | 'hot' | 'cold', trend?: 'up' | 'down' (±2 °C over 30 min of own readings) }
+     updateAvailable: bool, // T-022: a newer release waits (available → failed): the footer gear gets a dot and opens Settings › About
      updated:  null | { stale: bool, text: 'Updated 8:20 AM' | 'No new data since 8:20 AM' },  // T-024: shown in the footer; while refreshing it reads Refreshing…
      notificationsOff: bool,
      chart:    null | { status: 'ok'|'loading'|'empty'|'failed'|'fallback', since?: '7:58 AM' (fallback, only when the app started today),
@@ -274,11 +275,11 @@
     if (!st.signedIn) acts.push(['signin', 'person', 'Sign In…']);
     if (acts.length) out.push(`<nav class="gw-actions" aria-label="Actions">${acts.map(([id, icon, t]) => `<button class="gw-act" data-action="${id}">${ic(icon)}<span>${t}</span></button>`).join('')}</nav>`);
     const u = st.updated;
-    const foot = (id, icon, label, tip, keys) => `<button class="gw-icon-btn" data-action="${id}" aria-label="${label}" aria-keyshortcuts="${keys}" title="${tip}">${ic(icon)}</button>`;
+    const foot = (id, icon, label, tip, keys, dot) => `<button class="gw-icon-btn" data-action="${id}" aria-label="${label}" aria-keyshortcuts="${keys}" title="${tip}">${ic(icon)}${dot ? '<i class="gw-dot" aria-hidden="true"></i>' : ''}</button>`;
     // Empty while signed out and before the first reading: the first row already says so.
     const when = u && st.refreshing ? '<p class="gw-when"><span>Refreshing…</span></p>'
       : u ? `<p class="gw-when${u.stale ? ' is-stale' : ''}">${u.stale ? ic('warn') : ''}<span>${esc(u.text)}</span></p>` : '<p class="gw-when"></p>';
-    out.push(`<footer class="gw-foot">${foot('settings', 'gear', 'Settings', 'Settings (⌘,)', 'Meta+,')}${when}${foot('quit', 'power', 'Quit GoodWe Status', 'Quit GoodWe Status (⌘Q)', 'Meta+Q')}</footer>`);
+    out.push(`<footer class="gw-foot">${st.updateAvailable ? foot('settings', 'gear', 'Settings, update available', 'Update available · Settings (⌘,)', 'Meta+,', true) : foot('settings', 'gear', 'Settings', 'Settings (⌘,)', 'Meta+,')}${when}${foot('quit', 'power', 'Quit GoodWe Status', 'Quit GoodWe Status (⌘Q)', 'Meta+Q')}</footer>`);
 
     return `<div class="gw-panel" role="dialog" aria-label="GoodWe Status">${out.join('')}</div>`;
   }

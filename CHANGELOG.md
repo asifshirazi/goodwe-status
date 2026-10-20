@@ -4,6 +4,9 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ## [Unreleased]
 
+### Added
+- Settings › About: the version, a link to the project on GitHub, and updates. The app looks for a new release on GitHub each time it opens (Check Now looks again). When there is one, the panel's gear and the About tab get a blue dot, and the gear opens About with what's new. Update and Relaunch downloads it, checks its signature, installs it in place and relaunches; nothing downloads before you click. This is the first version that can update itself; from 0.1.x, install it by hand once.
+
 ### Changed
 - The bottom of the panel is one row: a gear for Settings (⌘,) on the left, the last update time in the middle, and a power button to quit (⌘Q) on the right. The separate "Updated" line is gone, and while a refresh runs the middle says "Refreshing…". The panel is shorter as a result.
 - The panel's power-cut strip is now the way into Stats: click it (or Tab to it and press Return or Space) to open Settings › Stats on today. The ⓘ after "Usually back around" is gone.

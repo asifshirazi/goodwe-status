@@ -6,7 +6,7 @@
 .gw-panel{
   --gw-label:rgba(0,0,0,.85); --gw-label-2:rgba(0,0,0,.60); --gw-label-3:rgba(0,0,0,.30);
   --gw-separator:rgba(0,0,0,.10); --gw-panel-bg:rgba(238,238,240,.86); --gw-panel-edge:rgba(0,0,0,.14);
-  --gw-highlight:#0063E1; --gw-on-highlight:#FFFFFF; --gw-red:#D70015; /* T-015 D-O10: 3.4:1 or more over any desktop (#FF3B30 was 2.2:1) */ --gw-green:#248A3D; /* T-006: systemGreen, accessible (3.8:1 on the panel; #34C759 is 1.9:1) */
+  --gw-highlight:#0063E1; --gw-badge:#0063E1; /* T-022 */ --gw-on-highlight:#FFFFFF; --gw-red:#D70015; /* T-015 D-O10: 3.4:1 or more over any desktop (#FF3B30 was 2.2:1) */ --gw-green:#248A3D; /* T-006: systemGreen, accessible (3.8:1 on the panel; #34C759 is 1.9:1) */
   --gw-soc:#0062CC; --gw-kw:#A84A00; --gw-kw-fill:rgba(168,74,0,.14); --gw-plot-text:rgba(0,0,0,.60);
   --gw-s1:4px; --gw-s2:8px; --gw-s3:12px; --gw-radius:12px; --gw-row-radius:6px;
   /* T-002 */
@@ -25,7 +25,7 @@
     /* T-002 */
     --gw-fill-hover:rgba(255,255,255,.10); --gw-fill-press:rgba(255,255,255,.18);
     --gw-tip-bg:rgba(58,58,60,.97); --gw-tip-edge:rgba(255,255,255,.14); --gw-cursor:rgba(255,255,255,.50); --gw-dot-ring:#2C2C2E;
-    --gw-tip-shadow:0 4px 12px rgba(0,0,0,.45),0 1px 3px rgba(0,0,0,.35); --gw-focus:#409CFF;
+    --gw-tip-shadow:0 4px 12px rgba(0,0,0,.45),0 1px 3px rgba(0,0,0,.35); --gw-focus:#409CFF; --gw-badge:#409CFF; /* T-022 */
   }
 }
 
@@ -190,3 +190,8 @@
 .gw-when span{overflow:hidden;text-overflow:ellipsis}
 .gw-when .gw-ic{width:14px;height:14px;color:var(--gw-label)}
 .gw-when.is-stale{color:var(--gw-label);font-weight:600}
+
+/* ---- T-022 · Update available: a 6 pt dot on the gear's top right, ringed in the panel colour so it reads on hover too ---- */
+.gw-icon-btn{position:relative}
+.gw-dot{position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--gw-badge);box-shadow:0 0 0 1.5px var(--gw-dot-ring)}
+@media (forced-colors:active){ .gw-dot{background:Highlight} }

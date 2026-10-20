@@ -19,6 +19,8 @@ const WIN: &str = "settings";
 const WIN_W: f64 = 560.0;
 /// The README's Tuya section (the connect form's link).
 const HOWTO: &str = "https://github.com/asifshirazi/goodwe-status#device-automation-tuya";
+/// About › Open on GitHub; release notes are under `/releases/tag/v<version>`.
+const REPO: &str = "https://github.com/asifshirazi/goodwe-status";
 
 /// The login item behind Open at login. The app's is tauri-plugin-autostart; tests use a fake.
 pub trait LoginItem {
@@ -66,8 +68,14 @@ pub fn pane(saved: Option<&str>) -> &'static str {
     match saved {
         Some("automation") => "automation",
         Some("stats") => "stats",
+        Some("about") => "about",
         _ => "general",
     }
+}
+
+/// Settings… and ⌘, (T-022): on About while a newer version waits (the gear's dot), else the last pane.
+pub fn open_pane(saved: Option<&str>, update_waiting: bool) -> &'static str {
+    if update_waiting { "about" } else { pane(saved) }
 }
 
 /// The window title: the visible pane's name.
@@ -75,6 +83,7 @@ pub fn title(pane: &str) -> &'static str {
     match pane {
         "automation" => "Automation",
         "stats" => "Stats",
+        "about" => "About",
         _ => "General",
     }
 }
@@ -85,8 +94,16 @@ pub struct State {
     pub account: Account,
     pub general: General,
     pub stats: StatsView,
+    pub about: About,
     #[serde(flatten)]
     pub auto: View,
+}
+
+/// Settings › About (T-022): the running version and the update row.
+#[derive(Debug, Serialize)]
+pub struct About {
+    pub version: String,
+    pub update: crate::updater::View,
 }
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -148,6 +165,7 @@ fn state(app: &AppHandle) -> Option<State> {
             has_battery,
         },
         stats,
+        about: About { version: app.package_info().version.to_string(), update: app.state::<crate::updater::Updater>().view() },
         auto: view,
     })
 }
@@ -187,7 +205,12 @@ pub fn open(app: &AppHandle) {
         st.wanted.store(true, Ordering::SeqCst);
         return;
     }
-    let p = pane(app.state::<Arc<Automation>>().pane().as_deref());
+    let auto = app.state::<Arc<Automation>>();
+    let waiting = app.state::<crate::updater::Updater>().available();
+    let p = open_pane(auto.pane().as_deref(), waiting);
+    if waiting {
+        auto.set_pane(p); // the state's pane, so the page draws About
+    }
     // Stats opens on today with the calendar shut, like Calendar does.
     let shown = {
         let mon = app.state::<Arc<Mutex<Monitor>>>();
@@ -321,6 +344,15 @@ pub async fn settings_action(app: AppHandle, a: Value) -> Result<(), String> {
             }
         }
         "howto" => drop(app.opener().open_url(HOWTO, None::<&str>)),
+        "check" => crate::updater::check(&app),
+        "install" => crate::updater::install(&app),
+        "cancel" => crate::updater::cancel(&app),
+        "github" => drop(app.opener().open_url(REPO, None::<&str>)),
+        "notes" => {
+            if let Some(v) = app.state::<crate::updater::Updater>().view().version {
+                let _ = app.opener().open_url(format!("{REPO}/releases/tag/v{v}"), None::<&str>);
+            }
+        }
         "close" => close(&app),
         "day" | "today" | "calendar" | "cal_month" | "cal_day" | "retry" => {
             let wake = stats::act(&mut app.state::<Arc<Mutex<Monitor>>>().lock().unwrap(), &a, std::time::Instant::now());
@@ -392,6 +424,9 @@ mod tests {
         assert_eq!(pane(Some("stats")), "stats");
         assert_eq!(pane(Some("something else")), "general");
         assert_eq!((title("general"), title("automation"), title("stats")), ("General", "Automation", "Stats"));
+        assert_eq!((pane(Some("about")), title("about")), ("about", "About"));
+        // T-022: the gear with its dot opens About; without it, the last pane
+        assert_eq!((open_pane(Some("stats"), true), open_pane(Some("stats"), false), open_pane(None, false)), ("about", "stats", "general"));
         // The pane is saved with the settings file (automation::settings_file_has_no_secret round-trips it).
         let p = std::env::temp_dir().join(format!("gw-pane-{}.json", std::process::id()));
         let auto = Automation::new(Some(p.clone()), crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), grid_now: Box::new(|| None) });
@@ -465,13 +500,15 @@ mod tests {
             account: account(&Monitor::new(false)),
             general: General { open_at_login: true, low_battery: 20, show_temps: true, temps: "both", show_cuts: true, has_battery: true },
             stats: stats::view(&Monitor::new(false), std::time::Instant::now()),
+            about: About { version: "0.1.2".into(), update: crate::updater::Updates::new("0.1.2", Default::default()).view() },
             auto: auto.view(false),
         };
         assert!(auto.show_cuts(), "T-020: on by default, also for a saved file without it");
         let v = serde_json::to_value(s).unwrap();
-        for k in ["pane", "account", "general", "stats", "automation", "tuya", "devices", "add"] {
+        for k in ["pane", "account", "general", "stats", "about", "automation", "tuya", "devices", "add"] {
             assert!(v.get(k).is_some(), "missing {k}: {v}");
         }
         assert_eq!(v["general"], serde_json::json!({ "openAtLogin": true, "lowBattery": 20, "showTemps": true, "temps": "both", "showCuts": true, "hasBattery": true }));
+        assert_eq!(v["about"], serde_json::json!({ "version": "0.1.2", "update": { "kind": "current" } }));
     }
 }

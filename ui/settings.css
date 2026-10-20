@@ -1,4 +1,4 @@
-/* Settings window. Three panes (General, Automation, Stats) behind a toolbar; each pane is a macOS System Settings form:
+/* Settings window. Four panes (General, Automation, Stats, About) behind a toolbar; each pane is a macOS System Settings form:
    headed groups of rows, label left, control right. Tokens: the sign-in box's (ui/signin.html) plus the ones marked new. */
 /* D-R3: without this WebKit draws native controls (pop-ups) in their light look in dark mode. Ships. */
 :root{color-scheme:light dark}
@@ -176,3 +176,26 @@ h2.first{margin-top:0}
 .cal-key{display:flex;align-items:center;gap:6px;margin:8px 2px 0;font-size:11px;color:var(--label-2)}
 .cal-key i{width:4px;height:4px;border-radius:50%;background:var(--grid-off)}
 @media (forced-colors:active){ .strip .cut{fill:Highlight} .cal .day.is-sel{background:Highlight;color:HighlightText} .cal .day.has-cut::after,.cal-key i{background:CanvasText} }
+
+/* ---- T-022 · About ---- */
+.tab{position:relative}
+.tab .dot,.gw-dot{position:absolute;top:3px;right:calc(50% - 15px);width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 1.5px var(--toolbar)}
+.ab-hero{display:flex;align-items:center;gap:16px;padding:4px 2px 2px}
+.ab-hero img{flex:none;width:64px;height:64px}
+.ab-hero h1{margin:0;font-size:17px;line-height:22px;font-weight:600}
+.ab-hero p{margin:1px 0 0;font-size:12px;color:var(--label-2)}
+.ab-name{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:6px}
+.ab-ver{font-size:12px;color:var(--label);font-variant-numeric:tabular-nums;white-space:nowrap;user-select:text;cursor:text}
+.ab-state{display:flex;align-items:center}
+.ab-state svg{width:13px;height:13px;flex:none;margin-right:6px;color:var(--label)}
+.ab-prog{display:flex;align-items:center;gap:10px;height:15px;margin-top:2px} /* the height of the small line it replaces: no jump */
+.ab-prog .bar{flex:1;width:auto}
+.ab-prog small{margin:0;line-height:15px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ab-notes ul{margin:4px 0 6px;padding-left:16px;font-size:12px;color:var(--label-2)}
+.ab-notes li + li{margin-top:2px}
+.ab-notes a{display:inline-flex;align-items:center;gap:3px;font-size:12px;color:var(--link);text-decoration:none}
+.ab-notes a:hover{text-decoration:underline}
+.ab-notes a svg{width:11px;height:11px}
+.ab-foot{margin:6px 2px 0;font-size:11px;color:var(--label-2)}
+.ab-lic{margin:16px 0 0;text-align:center;font-size:11px;color:var(--label-2)}
+@media (forced-colors:active){ .tab .dot{background:Highlight} }

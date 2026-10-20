@@ -1,6 +1,6 @@
 /* The Settings window. Rust sends `settings-open` / `settings-state` (shape: hand-off spec › State and actions, copy already
    formatted); GWS.renderSettings(state) returns the window's HTML; every control answers with `settings_action`.
-   Three panes behind a noncustomizable toolbar (General, Automation, Stats); the native title bar shows the pane's name. */
+   Four panes behind a noncustomizable toolbar (General, Automation, Stats, About); the native title bar shows the pane's name. */
 (function (root) {
   'use strict';
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -12,7 +12,9 @@
   const BOLT = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"><path d="M9.2 1.6L3.6 9.1h4.1l-1 5.3 5.7-7.6H8.3z"/></svg>';
   // T-015: bars, the same 16 grid and 1.1 stroke (SF Symbols' chart.bar).
   const BARS = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"><rect x="2.2" y="8.6" width="2.8" height="5.2" rx=".7"/><rect x="6.6" y="2.2" width="2.8" height="11.6" rx=".7"/><rect x="11" y="5.6" width="2.8" height="8.2" rx=".7"/></svg>';
-  const PANES = [['general', 'General', GEAR], ['automation', 'Automation', BOLT], ['stats', 'Stats', BARS]];
+  // T-022: info.circle on the same 16 grid and 1.1 stroke.
+  const INFO = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.2v4.1"/><circle cx="8" cy="4.9" r=".55" fill="currentColor" stroke="none"/></svg>';
+  const PANES = [['general', 'General', GEAR], ['automation', 'Automation', BOLT], ['stats', 'Stats', BARS], ['about', 'About', INFO]];
   // T-015 Stats glyphs (14 grid, the panel's 1.4 stroke).
   const CH = d => `<svg viewBox="0 0 14 14" ${S}><path d="${d}"/></svg>`;
   const LEFT = CH('M8.6 3L4.6 7l4 4'), RIGHT = CH('M5.4 3l4 4-4 4'), DOWN = CH('M3.5 5.5L7 9l3.5-3.5');
@@ -51,6 +53,57 @@
       + `<select id="low" data-k="low">${opts.map(v => `<option value="${v}"${v === p ? ' selected' : ''}>${v}%</option>`).join('')}</select></div></section>`;
   };
   const troubleshooting = () => `<h2>Troubleshooting</h2><section class="grp"><div class="row"><div class="lbl"><span>Log folder</span><small>The app’s logs, for reporting a problem.</small></div>${btn('logs', 'Open Log Folder')}</div></section>`;
+
+  // ---- About pane (T-022) ----
+  // D-O1: a newer version is waiting (found, not yet installed): the About tab and the panel gear keep their dot.
+  const PENDING = ['available', 'downloading', 'installing', 'relaunching', 'failed'];
+  const pending = a => !!(a && a.update && PENDING.includes(a.update.kind));
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  // Rust sends Unix ms for the two clock lines; the page writes them in the Mac's own zone: "today at 9:41 AM".
+  function when(ms, now = Date.now()) {
+    const d = new Date(ms), day = x => { const t = new Date(x); return new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime(); };
+    const ago = Math.round((day(now) - day(ms)) / 864e5), h = d.getHours();
+    const t = `${h % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+    return `${ago === 0 ? 'today' : ago === 1 ? 'yesterday' : `on ${d.getDate()} ${MONTHS[d.getMonth()]}`} at ${t}`;
+  }
+  // update.kind: checking · current · available · downloading · installing · relaunching · failed · offline · unreachable.
+  // One Updates group; its first row always says where things stand and holds the one button that moves them on.
+  const ARROW = '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h6v6M11 3L3.5 10.5"/></svg>';
+  function about(a, now) {
+    const u = a.update || { kind: 'current' }, last = u.checked ? `Last checked ${when(u.checked, now)}.` : '';
+    // Owner (T-022): name and version on one line, each at its own size, on one baseline; a long version wraps whole.
+    const hero = `<section class="ab-hero"><img src="app-icon-128.png" alt="" width="64" height="64"><div><div class="ab-name"><h1>GoodWe Status</h1>`
+      + `<span class="ab-ver">Version ${esc(a.version)}</span></div><p>Your home battery and whether the grid is on, in the menu bar.</p><p class="ab-note">Not affiliated with GoodWe.</p></div></section>`;
+    const spin = '<span class="spin" aria-hidden="true"></span>', also = d => [d, last].filter(Boolean).join(' ');
+    const top = {
+      checking: [`${spin}Checking for updates…`, u.detail, btn('check', 'Check Now').replace('<button', '<button aria-disabled="true"')],
+      current: [`GoodWe Status is up to date`, u.updated ? `Updated to ${u.updated.version} ${when(u.updated.at, now)}.` : last, btn('check', 'Check Now')],
+      available: [`Version ${esc(u.version)} is available`, u.detail, btn('install', 'Update and Relaunch', true)],
+      downloading: [`Downloading version ${esc(u.version)}…`, '', btn('cancel', 'Cancel')],
+      installing: [`${spin}Installing version ${esc(u.version)}…`, u.detail, ''],
+      relaunching: [`${spin}Relaunching…`, u.detail, ''],
+      failed: [`${WARN}The update couldn’t be installed`, u.reason, btn('install', 'Retry')],
+      offline: [`Can’t check for updates`, also(u.detail), btn('check', 'Check Now')],
+      unreachable: [`Can’t reach GitHub`, also(u.detail), btn('check', 'Check Now')],
+    }[u.kind] || ['', '', ''];
+    const warn = u.kind === 'failed' || u.kind === 'offline' || u.kind === 'unreachable';
+    // No total from GitHub: the title gets the spinner instead of the bar (spec › For the build).
+    if (u.kind === 'downloading' && u.pct == null) top[0] = spin + top[0];
+    const prog = u.kind === 'downloading' && u.pct != null
+      ? `<div class="ab-prog"><span class="bar" role="progressbar" aria-label="Download" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${u.pct}"><i style="width:${u.pct}%"></i></span><small>${esc(u.progress || '')}</small></div>` : '';
+    const row1 = `<div class="row" role="status"><div class="lbl"><span class="ab-state${warn ? ' is-warn' : ''}">${top[0]}</span>`
+      + (top[1] ? `<small${u.kind === 'failed' ? ' class="err"' : ''}>${esc(top[1])}</small>` : '') + prog + `</div>${top[2]}</div>`;
+    // What's new: from the release's notes, while there is a newer version to talk about.
+    const notes = u.notes && u.notes.length && PENDING.includes(u.kind)
+      ? `<div class="row ab-notes"><div class="lbl"><span>What’s new in ${esc(u.version)}</span><ul>${u.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>`
+        + `<a href="#" data-action="notes" data-k="notes">Release notes on GitHub${ARROW}</a></div></div>` : '';
+    const foot = PENDING.includes(u.kind)
+      ? 'After the update, macOS may ask whether GoodWe Status can use its saved sign-in, and again for its Tuya keys if Tuya is connected. Click Always Allow each time.'
+      : 'GoodWe Status looks for a new release on GitHub each time it opens.';
+    const links = `<h2>Project</h2><section class="grp"><div class="row"><div class="lbl"><span>Source code</span><small>github.com/asifshirazi/goodwe-status</small></div>${btn('github', 'Open on GitHub')}</div></section>`;
+    return hero + `<h2>Updates</h2><section class="grp">${row1}${notes}</section><p class="ab-foot">${foot}</p>` + links
+      + '<p class="ab-lic">MIT License · © 2026 Asif Shirazi</p>';
+  }
 
   // ---- Automation pane ----
   // Change 3: no switch at the top, one line of intro (or the helper); each device row has its own switch.
@@ -152,13 +205,14 @@
     return head + `<section class="grp st">${sum}${table}</section><div class="st-foot">${st.note ? `<p class="foot">${esc(st.note)}</p>` : ''}${status}</div>`;
   }
 
-  function renderSettings(s) {
+  function renderSettings(s, now) {
     const pane = PANES.some(p => p[0] === s.pane) ? s.pane : 'general', title = PANES.find(p => p[0] === pane)[1];
     // D-Y8: roving tabindex (only the selected tab is in the Tab order); ← → select and show the next pane at once.
-    const tabs = PANES.map(([id, label, icon]) => `<button type="button" role="tab" class="tab" data-k="tab-${id}" data-action="pane" data-pane="${id}" aria-selected="${id === pane}" tabindex="${id === pane ? 0 : -1}" id="tab-${id}" aria-controls="pane">${icon}<span>${label}</span></button>`).join('');
+    const tabs = PANES.map(([id, label, icon]) => `<button type="button" role="tab" class="tab" data-k="tab-${id}" data-action="pane" data-pane="${id}" aria-selected="${id === pane}" tabindex="${id === pane ? 0 : -1}" id="tab-${id}" aria-controls="pane"${id === 'about' && pending(s.about) ? ' aria-description="Update available"' : ''}>${icon}<span>${label}</span>${id === 'about' && pending(s.about) ? '<i class="dot" aria-hidden="true"></i>' : ''}</button>`).join('');
     const body = pane === 'general'
       ? startup(s.general) + menuBar(s.general) + notifications(s.general) + troubleshooting() + account(s.account)
       : pane === 'stats' ? stats(s.stats)
+      : pane === 'about' ? about(s.about, now)
       : automation(s.automation) + (s.tuya.connected || s.devices.length ? devices(s) : '') + tuya(s.tuya);
     // D-O11: the title strip is empty (the native title bar draws the traffic lights and the title). D-O10: the strip and
     // the toolbar's gaps drag the window (data-drag, see below); the tab buttons don't carry it, so they stay clickable.
@@ -189,7 +243,7 @@
   const el = document.getElementById('root');
   const act = a => invoke('settings_action', { a }).catch(() => {});
   // A control that is gone after the action: where focus goes next (Sign Out → Sign In…, Connect → Add Device…).
-  const FOCUS_NEXT = { signout: 'signin', signin: 'signout', connect: 'add', aid: 'add', sec: 'add', dc: 'add', disconnect: 'aid' };
+  const FOCUS_NEXT = { signout: 'signin', signin: 'signout', connect: 'add', aid: 'add', sec: 'add', dc: 'add', disconnect: 'aid', install: 'cancel', cancel: 'install', notes: 'check' };
   let state = null, last = '', height = 0, hold = 0, queued = null, focusTo = null;
   const DAY0 = '\u0000day'; // T-015: focus the calendar's roving day (calendar.focus, else the selected day) after the render
 
@@ -246,7 +300,7 @@
     const b = e.target.closest('[data-action]');
     if (!b || b.getAttribute('aria-disabled') === 'true') return;
     const id = b.dataset.action;
-    if (id === 'howto') e.preventDefault();
+    if (b.tagName === 'A') e.preventDefault(); // How to get keys, Release notes: Rust opens the browser
     if (id === 'pane') return pane(b.dataset.pane);
     if (id === 'connect') return connect();
     // T-015 Stats: the day and calendar actions carry their step or day; Rust answers with the new state.
@@ -301,6 +355,9 @@
     if (state && state.pane === 'stats' && !(e.metaKey && k === 'w') && statsKey(e)) return e.preventDefault();
     if (e.key === 'Escape' || (e.metaKey && k === 'w')) { e.preventDefault(); return act({ id: 'close' }); }
     if (e.key === 'Enter' && (e.target.id === 'aid' || e.target.id === 'sec')) { e.preventDefault(); return connect(); }
+    // T-022: Return presses the window's default button (Update and Relaunch) unless a control has the key.
+    const def = e.key === 'Enter' && state && state.pane === 'about' && !e.target.closest('button, a, select, input') && el.querySelector('.btn.def');
+    if (def) { e.preventDefault(); return def.click(); }
     if (e.target.getAttribute && e.target.getAttribute('role') === 'tab' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
       e.preventDefault();
       const i = PANES.findIndex(p => p[0] === state.pane), n = PANES.length;

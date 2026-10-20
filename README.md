@@ -13,8 +13,9 @@ A macOS menu bar app that shows your home battery level and whether the grid is 
 - **Temperatures:** the inverter's and the battery's, each with a bar on its scale. **Warm**, **Hot** or **Cold** shows next to a reading that isn't fine (inverter warm from 60 °C, hot from 70 °C; battery warm from 40 °C, hot from 50 °C, cold at 0 °C or below), and an arrow when it moved 2 °C or more in 30 minutes. Hide them in **Settings › General › Show temperatures**.
 - **Chart:** point at it (or Tab, then ← →) to read the time, battery % and kW at that minute.
 - **Refresh:** the ↻ button at the top right, or ⌘R. The panel stays open while it refreshes.
-- **Settings** (the gear at the bottom left of the panel, ⌘,) holds Open at login, Show temperatures, Show today's power cuts, the low battery alert, the log folder, your account (Sign Out removes the saved login from your Keychain), the device automation below and Stats. Signed out, the panel also shows **Sign In…**. The power button at the bottom right quits (⌘Q), and between the two the panel says when it last got data (**Updated 9:45 AM**, or **No new data since …** when the readings stopped).
+- **Settings** (the gear at the bottom left of the panel, ⌘,) holds Open at login, Show temperatures, Show today's power cuts, the low battery alert, the log folder, your account (Sign Out removes the saved login from your Keychain), the device automation below, Stats and About. Signed out, the panel also shows **Sign In…**. The power button at the bottom right quits (⌘Q), and between the two the panel says when it last got data (**Updated 9:45 AM**, or **No new data since …** when the readings stopped).
 - **Stats:** **Settings › Stats** lists one day's power cuts: when the grid went off, when it came back and for how long, with a strip of the day above. ← / → (or ‹ ›) step a day, ⌘T goes to today, and the date button opens a calendar (a dot marks days with a cut).
+- **Updates:** the app looks for a new release on GitHub each time it opens, and you can update it from **Settings › About**. See [Updates](#updates).
 - **Device automation:** Tuya / Smart Life devices can change by themselves when the grid goes off or comes back, each after its own delay. See [Device automation (Tuya)](#device-automation-tuya).
 
 ## Install
@@ -30,6 +31,14 @@ A macOS menu bar app that shows your home battery level and whether the grid is 
 - **Start at login** is on after first sign-in. To turn it off: **Settings › General › Open at login**.
 
 <img src="docs/screenshots/settings-stats-light.jpg" alt="Settings, Stats pane" width="500">
+
+## Updates
+
+<img src="docs/screenshots/settings-about-light.jpg" alt="Settings, About pane" width="500">
+
+**Settings › About** shows the version, a link to this page on GitHub and the Updates row. Each time it opens, GoodWe Status quietly checks GitHub for a newer release; **Check Now** checks again. When one is found, a blue dot appears on the panel's gear and on the About tab, and the gear (or ⌘,) opens About, with what's new in that version. Nothing downloads until you click **Update and Relaunch**: the app downloads the new version (Cancel stops it), checks its signature, replaces itself in the same place and opens again. There is no notification for an update. If something fails, About says why and you keep the version you have; **Retry** tries again.
+
+After an update macOS asks once for each saved Keychain item (your SEMS login and, if connected, the Tuya keys): click **Always Allow**. Version 0.2.0 is the first that can update itself; from 0.1.x, install it by hand once (see Install).
 
 ## Device automation (Tuya)
 
@@ -54,8 +63,10 @@ Needs macOS 12+, [Rust](https://rustup.rs) (stable), and the signing identity be
 cargo install tauri-cli --version 2.12.3 --locked
 git clone https://github.com/asifshirazi/goodwe-status.git
 cd goodwe-status
-cargo tauri build --bundles app
+cargo tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
 ```
+
+The `--config` part skips the update package, which needs the maintainer's updater key (see Release builds).
 
 **Signing identity (once per Mac).** Builds are signed with a self-signed identity named `GoodWe Status Local Signing` (no Apple account needed), so Keychain "Always Allow" sticks. Its key stays in your login Keychain.
 
@@ -81,13 +92,34 @@ security find-identity -p codesigning
 
 "Not trusted" in the last line is expected. The app is at `src-tauri/target/release/bundle/macos/GoodWe Status.app`.
 
-**Release builds** must remap your home folder, or your user name ships in the binary:
+**Release builds** must remap your home folder, or your user name ships in the binary. They also sign the update package with the updater key: the private key is `~/.tauri/goodwe-status-updater.key` (never in the repo, keep a backup: without it installed apps can't update), its password is in the login Keychain as "GoodWe Status updater key", and the public key is in `tauri.conf.json`.
 
 ```sh
+V=0.2.0   # the new version
+export TAURI_SIGNING_PRIVATE_KEY=~/.tauri/goodwe-status-updater.key
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(security find-generic-password -s 'GoodWe Status updater key' -w)"
 RUSTFLAGS="--remap-path-prefix=$HOME=~" cargo tauri build --bundles app
-strings -a "src-tauri/target/release/bundle/macos/GoodWe Status.app/Contents/MacOS/goodwe-status" | grep -c "$HOME"   # must print 0
-ditto -c -k --keepParent "src-tauri/target/release/bundle/macos/GoodWe Status.app" "GoodWe Status.zip"
+B=src-tauri/target/release/bundle/macos
+strings -a "$B/GoodWe Status.app/Contents/MacOS/goodwe-status" | grep -c "$HOME"   # must print 0
+ditto -c -k --keepParent "$B/GoodWe Status.app" "GoodWe-Status-$V-macos-arm64.zip"
+# The update package: no spaces in asset names (GitHub turns them into dots).
+cp "$B/GoodWe Status.app.tar.gz" "GoodWe-Status-$V-macos-arm64.app.tar.gz"
+cp "$B/GoodWe Status.app.tar.gz.sig" "GoodWe-Status-$V-macos-arm64.app.tar.gz.sig"
 ```
+
+The app checks `latest.json` on the newest release at every launch, so **every release must carry one**. Write it next to the files (`notes`: the version's CHANGELOG entry; `signature`: the `.sig` file's text):
+
+```sh
+jq -n --arg v "$V" --arg notes "- First change
+- Second change" \
+  --arg sig "$(cat GoodWe-Status-$V-macos-arm64.app.tar.gz.sig)" \
+  --argjson size "$(stat -f %z GoodWe-Status-$V-macos-arm64.app.tar.gz)" \
+  --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{version: $v, notes: $notes, pub_date: $date, size: $size, platforms: {"darwin-aarch64": {signature: $sig,
+    url: "https://github.com/asifshirazi/goodwe-status/releases/download/v\($v)/GoodWe-Status-\($v)-macos-arm64.app.tar.gz"}}}' > latest.json
+```
+
+Upload all four with the release: the `.zip` (manual installs), the `.app.tar.gz`, its `.sig` and `latest.json`. The version in `latest.json` must match the build (the app rejects a package signed for another version).
 
 ## When GoodWe changes their API
 

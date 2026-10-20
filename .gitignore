@@ -9,7 +9,8 @@
 /.armaze-stack
 /.ignore
 
-# Local secrets
+# Local secrets (the updater's private key lives in ~/.tauri, never here)
+*.key
 .env
 .env.*
 !.env.example
