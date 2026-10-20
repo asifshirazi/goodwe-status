@@ -205,9 +205,24 @@ fn candidates(outs: &[Outage], today: i64) -> impl Iterator<Item = &Outage> {
     outs.iter().filter(move |o| !o.running && (oldest..today * DAY).contains(&o.start) && o.start != oldest)
 }
 
-/// Back-on rule, steps 2–8: `s` = the current outage's start, `now` = station now in minutes.
-/// "Usually back around 12:05 PM (last 14 days)" or nothing.
+/// Back-on rule: `s` = the current outage's start, `now` = station now in minutes.
+/// "Usually back around 12:05 PM (last 14 days)" or nothing. Until its time passes the line follows
+/// the rule (it may move as the cut grows); once a shown time passes with the grid still off, that
+/// line stays until the grid is back (T-023, owner). Replaying the cut minute by minute keeps this
+/// stateless, so it holds across a relaunch or a panel first opened after the time.
 pub fn back_on(outs: &[Outage], s: i64, now: f64) -> Option<String> {
+    let mut shown = None;
+    for t in (s..now.ceil() as i64).map(|m| m as f64).chain([now]) {
+        if shown.is_some_and(|raw| t >= raw) {
+            break; // its time passed: hold it
+        }
+        shown = usual_end(outs, s, t).filter(|&raw| t < raw);
+    }
+    shown.map(|raw| format!("Usually back around {} (last 14 days)", hm(round5(raw))))
+}
+
+/// Back-on rule, steps 2–8, as seen at `now`: the raw median end, before rounding.
+fn usual_end(outs: &[Outage], s: i64, now: f64) -> Option<f64> {
     let today = (now.floor() as i64).div_euclid(DAY);
     let elapsed = now - s as f64;
     let mut ends: Vec<i64> = (today - PAST_DAYS..today)
@@ -225,8 +240,7 @@ pub fn back_on(outs: &[Outage], s: i64, now: f64) -> Option<String> {
     if set.len() < AGREE_DAYS {
         return None;
     }
-    let raw = median(set);
-    (now < raw).then(|| format!("Usually back around {} (last 14 days)", hm(round5(raw))))
+    Some(median(set))
 }
 
 /// A cut placed on yesterday, today or tomorrow: (start, end, the day it really happened).
@@ -505,12 +519,13 @@ mod tests {
     }
 
     #[test]
-    fn back_hidden_once_raw_median_passed() {
+    fn back_held_once_raw_median_passed() {
+        // T-023 (owner): past the usual time with the grid still off, the line stays as it was
         assert_eq!(back("2026-10-14 12:02"), usual("12:05\u{a0}PM")); // R1, raw median 12:03
-        assert_eq!(back("2026-10-14 12:03"), None);
+        assert_eq!(back("2026-10-14 12:03"), None); // the grid came back at 12:03: the line goes
         assert_eq!(back("2026-10-15 12:02"), usual("12:05\u{a0}PM")); // R2, raw median 12:03
-        assert_eq!(back("2026-10-15 12:03"), None);
-        assert_eq!(back("2026-10-15 12:20"), None); // still off, no later set agrees
+        assert_eq!(back("2026-10-15 12:03"), usual("12:05\u{a0}PM"));
+        assert_eq!(back("2026-10-15 12:20"), usual("12:05\u{a0}PM")); // still off: no rerun, no hiding
     }
 
     #[test]
@@ -555,7 +570,7 @@ mod tests {
 
     #[test]
     fn back_shows_when_three_agree() {
-        // B, made-up: ends 12:01, 12:03, 12:05, 13:11 → median 12:03 → 12:05; gone from 12:03
+        // B, made-up: ends 12:01, 12:03, 12:05, 13:11 → median 12:03 → 12:05; held from 12:03 (T-023)
         let o = made(&[
             ("2026-10-17 08:00", "2026-10-17 12:01"),
             ("2026-10-16 08:00", "2026-10-16 12:03"),
@@ -564,7 +579,7 @@ mod tests {
         ]);
         let s = at("2026-10-18 09:00");
         assert_eq!(back_on(&o, s, at("2026-10-18 10:00") as f64), usual("12:05\u{a0}PM"));
-        assert_eq!(back_on(&o, s, at("2026-10-18 12:03") as f64), None);
+        assert_eq!(back_on(&o, s, at("2026-10-18 12:03") as f64), usual("12:05\u{a0}PM"));
     }
 
     #[test]
@@ -579,7 +594,7 @@ mod tests {
         let s = at("2026-10-17 23:33");
         assert_eq!(back_on(&o, s, at("2026-10-18 00:40") as f64), usual("2:05\u{a0}AM"));
         assert_eq!(back_on(&o, s, at("2026-10-18 02:03") as f64), usual("2:05\u{a0}AM"));
-        assert_eq!(back_on(&o, s, at("2026-10-18 02:04") as f64), None);
+        assert_eq!(back_on(&o, s, at("2026-10-18 02:04") as f64), usual("2:05\u{a0}AM")); // held (T-023)
     }
 
     #[test]
@@ -609,22 +624,26 @@ mod tests {
     }
 
     #[test]
-    fn back_reruns_after_usual_time() {
-        // F, made-up: S 09:07, now 12:20 (E 193): the ~12:03 cuts (176 min) drop
+    fn back_held_after_usual_time() {
+        // F, made-up: S 09:07, now 12:20 (E 193). Before T-023 the ~12:03 cuts (176 min) dropped here
+        // and the line went (or moved to 4:30 PM); now 12:05 PM passed with the grid off, so it stays.
         let mut o = made(&[
             ("2026-10-17 09:07", "2026-10-17 12:03"),
             ("2026-10-16 09:07", "2026-10-16 12:03"),
             ("2026-10-15 09:07", "2026-10-15 12:03"),
         ]);
         let (s, now) = (at("2026-10-18 09:07"), at("2026-10-18 12:20") as f64);
-        assert_eq!(back_on(&o, s, now), None);
+        assert_eq!(back_on(&o, s, now), usual("12:05\u{a0}PM"));
         o.extend(made(&[
             ("2026-10-14 08:30", "2026-10-14 16:28"),
             ("2026-10-13 08:40", "2026-10-13 16:31"),
             ("2026-10-17 10:00", "2026-10-17 16:33"),
         ]));
-        // 10-17 now has two cuts: the longer one (10:00) is the only one left after the filter
-        assert_eq!(back_on(&o, s, now), usual("4:30\u{a0}PM"));
+        // 10-17 now has two cuts; the rule alone at 12:20 would say 4:30 PM, but 12:05 PM was shown first
+        assert_eq!(usual_end(&o, s, now).map(round5), Some(at("2026-10-18 16:30")));
+        assert_eq!(back_on(&o, s, now), usual("12:05\u{a0}PM"));
+        // the next day it stays too (S yesterday, still off)
+        assert_eq!(back_on(&o, s, at("2026-10-19 08:00") as f64), usual("12:05\u{a0}PM"));
     }
 
     #[test]

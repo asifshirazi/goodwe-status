@@ -183,8 +183,8 @@ pub fn delay_left(delay_s: u32, off_for_s: i64) -> u32 {
 }
 
 /// The intro line's helper (H1–H5) and whether the device switches are disabled. None = H6 (the page's
-/// default). `all_on`: every device's switch is on.
-pub fn hint(keys: bool, devices: usize, signed_in: bool, problem: Option<Problem>, all_on: bool, off_now: bool) -> (bool, Option<&'static str>) {
+/// default). `all_on`: every device's switch is on. `grid`: the known live grid state, if any.
+pub fn hint(keys: bool, devices: usize, signed_in: bool, problem: Option<Problem>, all_on: bool, grid: Option<Which>) -> (bool, Option<&'static str>) {
     if !keys {
         return (true, Some("Connect Tuya and add a device first."));
     }
@@ -197,8 +197,11 @@ pub fn hint(keys: bool, devices: usize, signed_in: bool, problem: Option<Problem
         "Paused until Tuya accepts the keys again."
     } else if problem == Some(Problem::PlanExpired) {
         "Devices can’t change until the Tuya cloud plan is extended."
-    } else if !all_on && off_now {
+    } else if !all_on && grid == Some(Which::Off) {
         "The grid is off now: turning a device on sets its Grid off choice."
+    } else if !all_on && grid == Some(Which::On) {
+        // T-021 B-Y2 (in T-023): a change in Settings acts at once in both states, so say so for grid on too.
+        "The grid is on now: turning a device on sets its Grid on choice."
     } else {
         return (false, None);
     };
@@ -819,9 +822,9 @@ impl Automation {
 
     /// The Automation pane's part of `settings-state`. Never a device id or the Secret.
     pub fn view(&self, signed_in: bool) -> View {
-        let off_now = (self.hooks.grid_now)().is_some_and(|n| n.which == Which::Off);
+        let grid = (self.hooks.grid_now)().map(|n| n.which);
         let st = self.st.lock().unwrap();
-        let (disabled, hint) = hint(st.keys.is_some(), st.store.devices.len(), signed_in, st.problem, st.store.devices.iter().all(|d| d.enabled), off_now);
+        let (disabled, hint) = hint(st.keys.is_some(), st.store.devices.len(), signed_in, st.problem, st.store.devices.iter().all(|d| d.enabled), grid);
         let rejected = st.problem == Some(Problem::KeysRejected);
         let tuya = match (&st.keys, rejected) {
             (Some(k), false) => TuyaView {
@@ -1167,6 +1170,8 @@ mod tests {
         t.auto.set_action(0, Which::On, 3);
         settle(&t.auto).await;
         assert_eq!(commands(&t.log).len(), 3);
+        // the helper says what turning it back on does now (T-021 B-Y2)
+        assert_eq!(t.auto.view(true).automation.hint, Some("The grid is on now: turning a device on sets its Grid on choice."));
     }
 
     #[tokio::test]
@@ -1438,14 +1443,17 @@ mod tests {
 
     #[test]
     fn automation_helper_texts() {
-        assert_eq!(hint(false, 0, true, None, true, false), (true, Some("Connect Tuya and add a device first.")));
-        assert_eq!(hint(true, 0, true, None, true, false), (true, Some("Add a device first.")));
-        assert_eq!(hint(true, 1, false, None, true, true), (false, Some("Sign in to SEMS Portal to follow the grid.")));
-        assert_eq!(hint(true, 1, true, Some(Problem::KeysRejected), true, true), (false, Some("Paused until Tuya accepts the keys again.")));
-        assert_eq!(hint(true, 1, true, Some(Problem::PlanExpired), true, true), (false, Some("Devices can’t change until the Tuya cloud plan is extended.")));
-        assert_eq!(hint(true, 1, true, None, false, true), (false, Some("The grid is off now: turning a device on sets its Grid off choice.")));
-        assert_eq!(hint(true, 1, true, None, true, true), (false, None)); // H6
-        assert_eq!(hint(true, 1, true, None, false, false), (false, None));
+        let off = Some(Which::Off);
+        assert_eq!(hint(false, 0, true, None, true, None), (true, Some("Connect Tuya and add a device first.")));
+        assert_eq!(hint(true, 0, true, None, true, None), (true, Some("Add a device first.")));
+        assert_eq!(hint(true, 1, false, None, true, off), (false, Some("Sign in to SEMS Portal to follow the grid.")));
+        assert_eq!(hint(true, 1, true, Some(Problem::KeysRejected), true, off), (false, Some("Paused until Tuya accepts the keys again.")));
+        assert_eq!(hint(true, 1, true, Some(Problem::PlanExpired), true, off), (false, Some("Devices can’t change until the Tuya cloud plan is extended.")));
+        assert_eq!(hint(true, 1, true, None, false, off), (false, Some("The grid is off now: turning a device on sets its Grid off choice.")));
+        assert_eq!(hint(true, 1, true, None, false, Some(Which::On)), (false, Some("The grid is on now: turning a device on sets its Grid on choice.")));
+        assert_eq!(hint(true, 1, true, None, true, off), (false, None)); // H6
+        assert_eq!(hint(true, 1, true, None, true, Some(Which::On)), (false, None));
+        assert_eq!(hint(true, 1, true, None, false, None), (false, None)); // grid unknown or stale: nothing is sent
     }
 
     #[tokio::test]

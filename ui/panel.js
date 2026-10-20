@@ -9,6 +9,7 @@
                //   · 'Since at least 11:58 AM' (history can't tell and the app didn't see it go off)
                //   · 'Since at least 12:00 AM' · 'Since at least yesterday 12:00 AM' · absent while the first history call runs.
                // T-002 back: 'Usually back around 12:05 PM (last 14 days)' only while off and the days agree; else absent.
+               //   T-023: once that time passes with the grid still off, the same line stays until the grid is back.
                // T-002 next (grid on): two lines, e.g. ['Next cut usually around 1:35 PM', 'back around 4:30 PM (last 14 days)']; else absent.
      refreshing: bool,   // T-002: a poll the user started (click, ⌘R, sign-in) is running; the icon spins. Timer polls: false.
      battery:  null | { soc: '86%', power: 'Discharging 998 W', left?: { time: '~4h 20m', rest: 'left at 1.0 kW' } },
@@ -54,8 +55,6 @@
     power: () => `<svg viewBox="0 0 16 16" ${S}><path d="M8 2v5.4"/><path d="M4.7 4.3a5 5 0 1 0 6.6 0"/></svg>`,
     // T-015: thermometer, same stroke family (SF Symbols' thermometer.medium, drawn on the 16 grid).
     thermo: () => `<svg viewBox="0 0 16 16" ${S}><path d="M6.4 9.3V3.6a1.6 1.6 0 0 1 3.2 0v5.7a2.9 2.9 0 1 1-3.2 0z"/><path d="M8 6.6v4.6"/></svg>`,
-    // T-020: SF Symbols' info.circle on the 14 grid, drawn at 13 pt beside 12 pt text.
-    info: () => `<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><circle cx="7" cy="7" r="5.6"/><path d="M7 6.4v3.5"/><circle cx="7" cy="4.35" r=".45" fill="currentColor"/></svg>`,
     gear: () => `<svg viewBox="0 0 16 16" ${S}><path d="M14.22 7.00L14.22 9.00L12.77 9.13L12.17 10.57L13.11 11.69L11.69 13.11L10.57 12.17L9.13 12.77L9.00 14.22L7.00 14.22L6.87 12.77L5.43 12.17L4.31 13.11L2.89 11.69L3.83 10.57L3.23 9.13L1.78 9.00L1.78 7.00L3.23 6.87L3.83 5.43L2.89 4.31L4.31 2.89L5.43 3.83L6.87 3.23L7.00 1.78L9.00 1.78L9.13 3.23L10.57 3.83L11.69 2.89L13.11 4.31L12.17 5.43L12.77 6.87Z"/><circle cx="8" cy="8" r="2.1"/></svg>`,
   };
   const ARROW = { up: '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8.5V1.8M2.2 4.4L5 1.6l2.8 2.8"/></svg>',
@@ -176,17 +175,24 @@
   // T-020: today's cut strip under the Grid section's lines, at the text column's width (section 304 − the 24 pt indent).
   const SW = 280;
   let stripRows = null; // the strip's rows, for bindChart after a render
+  // T-023: the whole strip is a button (click, Return, Space) that opens Settings › Stats on today; ← → still read the cuts.
   function stripHTML(cu) {
     const n = ((cu.strip || {}).cuts || []).length, label = cu.status === 'ok' ? cu.summary : cu.msg, svg = GWStrip.svg(cu.strip, SW);
-    return `<div class="gw-strip">` + (n
-      ? `<div class="gw-strip-plot" tabindex="0" role="group" aria-label="${esc(label)} Use left and right arrows to read each cut.">${svg}<div class="gw-tip" role="status" hidden></div></div>`
-      : `<div class="gw-strip-plot" role="img" aria-label="${esc(label || '')}">${svg}</div>`) + `</div>`;
+    const desc = `${label || ''}${n ? ' Use left and right arrows to read each cut.' : ''}`;
+    return `<div class="gw-strip"><div class="gw-strip-plot" tabindex="0" role="button" data-action="stats" aria-label="Show power cuts in Stats" aria-describedby="gw-strip-d">`
+      + `${svg}${n ? '<div class="gw-tip" role="status" hidden></div>' : ''}<span id="gw-strip-d" hidden>${esc(desc)}</span></div></div>`;
   }
 
   function bindChart(rootEl) {
     // The strip's card sits under the bar (CSS), over the hour labels, so it can't leave the panel at its top; it may
     // reach left to the section's text edge (the status icon).
-    GWStrip.bind(rootEl.querySelector('.gw-strip-plot[tabindex]'), stripRows, SW, { tip: 'gw-tip', left: -24 });
+    const sp = rootEl.querySelector('.gw-strip-plot');
+    if (sp && sp.querySelector('.gw-tip')) GWStrip.bind(sp, stripRows, SW, { tip: 'gw-tip', left: -24 });
+    // T-023: the press fill by class, since the read-out cancels pointerdown (no focus on click) and with it :active.
+    if (sp) {
+      sp.addEventListener('pointerdown', () => sp.classList.add('is-press'));
+      ['pointerup', 'pointerleave', 'pointercancel'].forEach(n => sp.addEventListener(n, () => sp.classList.remove('is-press')));
+    }
     rootEl.querySelectorAll('.gw-plot[data-plot]').forEach(el => {
       const c = CHARTS[el.dataset.plot], toMin = e => {
         const r = el.getBoundingClientRect(), vx = (e.clientX - r.left) * 304 / r.width;
@@ -224,14 +230,10 @@
     const busy = !!st.refreshing, off = !st.signedIn;
     const refresh = `<button class="gw-icon-btn${busy ? ' is-busy' : ''}" data-action="refresh" aria-label="${busy ? 'Refreshing' : 'Refresh'}" title="${busy ? 'Refreshing…' : 'Refresh (⌘R)'}"`
       + `${off ? ' aria-disabled="true" tabindex="-1"' : busy ? ' aria-disabled="true" aria-busy="true"' : ''}>${ic('refresh')}</button>`;
-    // T-020: the back-on line (only that one, owner) ends with an info button that opens Settings › Stats on today.
-    // Its last word and the button never part, so the icon can't wrap onto a line of its own.
-    const info = `<button class="gw-icon-btn gw-info" data-action="stats" aria-label="Show power cuts in Stats" title="Show power cuts in Stats">${ic('info')}</button>`;
-    const withInfo = l => { const i = l.lastIndexOf(' '); return `${esc(l.slice(0, i + 1))}<span class="gw-keep">${esc(l.slice(i + 1))}${info}</span>`; };
     const cu = st.signedIn && st.cuts ? st.cuts : null;
     stripRows = cu && cu.rows;
     out.push(`<section class="gw-sec"><div class="gw-row">${statusIcon}<span class="gw-title">${esc(s.title)}</span>${refresh}</div>`
-      + `${s.detail ? `<p class="gw-sub">${esc(s.detail)}</p>` : ''}${s.back ? `<p class="gw-sub">${withInfo(s.back)}</p>` : ''}`
+      + `${s.detail ? `<p class="gw-sub">${esc(s.detail)}</p>` : ''}${s.back ? `<p class="gw-sub">${esc(s.back)}</p>` : ''}`
       + `${s.next ? s.next.map(l => `<p class="gw-sub">${esc(l)}</p>`).join('') : ''}${cu ? stripHTML(cu) : ''}</section>`);
 
     const b = st.battery;

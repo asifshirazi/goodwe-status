@@ -174,7 +174,7 @@ fn show_pane(app: &AppHandle, pane: &str) {
     }
 }
 
-/// The panel's ⓘ (T-020 § 1): Settings on Stats, today, calendar shut; in place when it is open.
+/// The panel's cut strip (T-023): Settings on Stats, today, calendar shut; in place when it is open.
 pub fn open_stats(app: &AppHandle) {
     app.state::<Arc<Automation>>().set_pane("stats");
     open(app);

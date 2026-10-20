@@ -150,19 +150,18 @@
 .gw-pair.is-cold em{color:var(--gw-label)}
 @media (forced-colors:active){ .gw-meter{border:1px solid CanvasText} .gw-meter i{background:CanvasText} }
 
-/* ---- T-020 · Info button and today's cut strip (Grid section) ---- */
-/* Info: the Refresh button's 24 pt target, states and motion (.gw-icon-btn), set inline at the end of the estimate line.
-   −4 top/bottom keeps the 16 pt line; 2 left keeps the focus ring and the fill off the text (D-Y1); −6 right may reach into the padding, as Refresh. */
-.gw-keep{white-space:nowrap}
-.gw-icon-btn.gw-info{display:inline-grid;vertical-align:middle;margin:-4px -6px -4px 2px;position:relative;top:-1px} /* −1: centre on the x-height (optical) */
-.gw-info .gw-ic{width:13px;height:13px}
-.gw-icon-btn.gw-info:focus-visible{outline-offset:-1px} /* D-Y1: the ring sits 1 pt in */
-/* Strip: the Stats strip (ui/strip.js) on the panel's tokens, under the text column. */
+/* ---- T-020 · Today's cut strip (Grid section) ---- */
+/* Strip: the Stats strip (ui/strip.js) on the panel's tokens, under the text column.
+   T-023: it is the button to Settings › Stats. Hover and press fill a box 4 pt around it (the focus ring's spot),
+   with the Refresh button's fills and timing; a spread shadow, so nothing moves. */
 .gw-panel{--gw-track:rgba(0,0,0,.07)}
 @media (prefers-color-scheme: dark){ .gw-panel{--gw-track:rgba(255,255,255,.09)} }
 .gw-strip{margin-top:var(--gw-s2);padding-left:24px}
-.gw-strip-plot{position:relative;width:280px;border-radius:4px;outline:none}
-.gw-strip-plot[tabindex]:focus-visible{outline:2px solid var(--gw-focus);outline-offset:4px}
+.gw-strip-plot{position:relative;width:280px;border-radius:4px;outline:none;cursor:pointer;
+  transition:background-color var(--gw-press) ease-out,box-shadow var(--gw-press) ease-out}
+@media (hover:hover){ #root:not(.gw-still) .gw-strip-plot:hover:not(.is-press){background:var(--gw-fill-hover);box-shadow:0 0 0 4px var(--gw-fill-hover)} }
+.gw-strip-plot.is-press{background:var(--gw-fill-press);box-shadow:0 0 0 4px var(--gw-fill-press)}
+.gw-strip-plot:focus-visible{outline:2px solid var(--gw-focus);outline-offset:4px}
 .gw-strip svg{display:block;overflow:visible}
 .gw-strip .track{fill:var(--gw-track)}
 .gw-strip .track-rest{fill:none;stroke:var(--gw-label-2);stroke-dasharray:2 3}
@@ -173,4 +172,4 @@
 .gw-strip-plot.is-reading .cut:not(.is-on){opacity:.4}
 .gw-strip .gw-tip{top:16px;max-width:220px} /* under the bar, over the hour labels */
 .gw-tip-row i.off{background:var(--gw-red)}
-@media (forced-colors:active){ .gw-strip .cut{fill:Highlight} .gw-strip-plot[tabindex]:focus-visible{outline-color:Highlight} }
+@media (forced-colors:active){ .gw-strip .cut{fill:Highlight} .gw-strip-plot:focus-visible{outline-color:Highlight} }

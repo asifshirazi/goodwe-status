@@ -19,7 +19,7 @@
     const strip = a && a.classList.contains('gw-strip-plot') ? a.dataset.kb : null; // T-020: keyboard on a cut
     root.innerHTML = GW.renderPanel(s);
     GW.bindChart(root);
-    if (focused) {
+    if (focused && strip == null) { // the strip restores its own cut below
       const b = root.querySelector(`[data-action="${focused}"]`);
       if (b) b.focus();
     }
@@ -63,9 +63,9 @@
     invoke('panel_action', { id });
   };
 
-  // Return / Space on a focused row or the Refresh button is a native button click.
+  // Return / Space on a focused row or the Refresh button is a native button click (the strip: keydown below).
   root.addEventListener('click', e => {
-    const b = e.target.closest('.gw-act, .gw-icon-btn');
+    const b = e.target.closest('.gw-act, .gw-icon-btn, .gw-strip-plot');
     if (b && b.getAttribute('aria-disabled') !== 'true') run(b.dataset.action);
   });
 
@@ -73,6 +73,8 @@
     const k = e.key.toLowerCase();
     if (e.metaKey && (k === 'r' || k === 'q' || k === ',')) { e.preventDefault(); run({ r: 'refresh', q: 'quit', ',': 'settings' }[k]); return; }
     if (e.key === 'Escape') { e.preventDefault(); invoke('panel_action', { id: 'close' }); return; }
+    // T-023: the strip is a div with role=button, so Return and Space are wired here.
+    if ((e.key === 'Enter' || e.key === ' ') && document.activeElement && document.activeElement.matches('.gw-strip-plot')) { e.preventDefault(); run('stats'); return; }
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     e.preventDefault();
     const rows = enabled(), i = rows.indexOf(document.activeElement), n = rows.length;

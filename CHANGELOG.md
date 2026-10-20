@@ -4,6 +4,11 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ## [Unreleased]
 
+### Changed
+- The panel's power-cut strip is now the way into Stats: click it (or Tab to it and press Return or Space) to open Settings › Stats on today. The ⓘ after "Usually back around" is gone.
+- "Usually back around …" stays once its time has passed while the grid is still off, so you can see the grid is later than usual; it goes when the grid comes back. Before, it disappeared or jumped to a later time.
+- Settings › Automation also says what turning a device on does while the grid is on ("The grid is on now: turning a device on sets its Grid on choice."), not only while it is off.
+
 ### Fixed
 - Device automation: a change in Settings › Automation now reaches the device at once while the grid is on too. Turning a device on, adding it, or changing its Grid on choice sets it right away (before, only grid-off changes did, so testing with the grid on looked like nothing worked).
 
