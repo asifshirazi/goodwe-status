@@ -230,6 +230,8 @@ pub struct Monitor {
     pub show_temps: bool,
     /// Settings › General › Show today's power cuts (T-020, default on).
     pub show_cuts: bool,
+    /// Settings › General › Reduce motion (T-029, default off): passed to the panel.
+    pub reduce_motion: bool,
     /// (time, inverter °C, battery °C) per new reading, back to the newest one 30 min old: the trend.
     pub(crate) temps: Vec<(LocalTs, Option<f64>, Option<f64>)>,
     /// A stale line was logged for (the live reading, today's history) and no recovery line since (T-026).
@@ -273,6 +275,7 @@ impl Monitor {
             low_alert: None,
             show_temps: true,
             show_cuts: true,
+            reduce_motion: false,
             temps: Vec::new(),
             stale_logged: (false, false),
         }
@@ -292,6 +295,7 @@ impl Monitor {
             low_pct: self.low_pct,
             show_temps: self.show_temps,
             show_cuts: self.show_cuts,
+            reduce_motion: self.reduce_motion,
             ..Monitor::new(signed_in)
         };
     }

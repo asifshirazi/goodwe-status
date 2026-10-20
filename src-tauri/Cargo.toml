@@ -34,6 +34,12 @@ tauri-plugin-updater = "2"
 # Apple's UNUserNotificationCenter: real permission state and the default sound (5a item 5).
 [target.'cfg(target_os = "macos")'.dependencies]
 mac-usernotifications = "0.3.1"
+# T-029 Q2: NSColor.controlAccentColor for the pages (WKWebView's CSS AccentColor is always blue). Already in tauri's tree.
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSColor", "NSColorSpace", "NSAppearance", "NSResponder", "NSWindow", "NSAnimation", "NSAnimationContext", "NSWorkspace", "NSAccessibility", "objc2-quartz-core"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSNotification", "NSOperation", "NSString", "NSGeometry"] }
+# T-029 § 2: the Settings pane-switch resize curve (CAMediaTimingFunction). Already in tauri's tree.
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CAMediaTimingFunction"] }
+block2 = "0.6.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "test-util"] }

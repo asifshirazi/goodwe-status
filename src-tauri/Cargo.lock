@@ -1612,10 +1612,14 @@ name = "goodwe-status"
 version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
+ "block2",
  "hmac",
  "keyring",
  "mac-usernotifications",
  "md-5",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-quartz-core",
  "reqwest",
  "serde",
  "serde_json",

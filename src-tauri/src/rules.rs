@@ -110,11 +110,16 @@ pub fn fmt_power(watts: f64) -> String {
         return "Battery idle".into();
     }
     let verb = if watts > 0.0 { "Discharging" } else { "Charging" };
+    format!("{verb} {}", fmt_watts(watts))
+}
+
+/// "998 W" / "1.2 kW": the power line's unit, also used by the time left (T-029 D-Y2).
+pub fn fmt_watts(watts: f64) -> String {
     let w = watts.abs().round();
     if w < 1000.0 {
-        format!("{verb} {w} W")
+        format!("{w} W")
     } else {
-        format!("{verb} {} kW", fmt_kw(watts))
+        format!("{} kW", fmt_kw(watts))
     }
 }
 

@@ -13,7 +13,7 @@ A macOS menu bar app that shows your home battery level and whether the grid is 
 - **Temperatures:** the inverter's and the battery's, each with a bar on its scale. **Warm**, **Hot** or **Cold** shows next to a reading that isn't fine (inverter warm from 60 °C, hot from 70 °C; battery warm from 40 °C, hot from 50 °C, cold at 0 °C or below), and an arrow when it moved 2 °C or more in 30 minutes. Hide them in **Settings › General › Show temperatures**.
 - **Chart:** point at it (or Tab, then ← →) to read the time, battery % and kW at that minute.
 - **Refresh:** the ↻ button at the top right, or ⌘R. The panel stays open while it refreshes.
-- **Settings** (the gear at the bottom left of the panel, ⌘,) holds Open at login, Show temperatures, Show today's power cuts, the low battery alert, the log folder, your account (Sign Out removes the saved login from your Keychain), the device automation below, Stats and About. Signed out, the panel also shows **Sign In…**. The power button at the bottom right quits (⌘Q), and between the two the panel says when it last got data (**Updated 9:45 AM**, or **No new data since …** when the readings stopped).
+- **Settings** (the gear at the bottom left of the panel, ⌘,) holds Open at login, Show temperatures, Show today's power cuts, the low battery alert, Reduce motion, your account (Sign Out removes the saved login from your Keychain), the device automation below, Stats and About (version, updates, the log folder). Signed out, the panel also shows **Sign In…**. The power button at the bottom right quits (⌘Q), and between the two the panel says when it last got data (**Updated 9:45 AM**, or **No new data since …** when the readings stopped).
 - **Stats:** **Settings › Stats** lists one day's power cuts: when the grid went off, when it came back and for how long, with a strip of the day above. ← / → (or ‹ ›) step a day, ⌘T goes to today, and the date button opens a calendar (a dot marks days with a cut).
 - **Updates:** the app looks for a new release on GitHub each time it opens, and you can update it from **Settings › About**. See [Updates](#updates).
 - **Device automation:** Tuya / Smart Life devices can change by themselves when the grid goes off or comes back, each after its own delay. See [Device automation (Tuya)](#device-automation-tuya).
@@ -50,7 +50,7 @@ Set each Tuya device's **Grid off** and **Grid on** choice (a light's mode or po
 2. In the project, **Service API**: make sure **IoT Core** and **Authorization Token Management** are subscribed.
 3. **Devices › Link App Account › Add App Account**, then scan the QR code in the Smart Life app (**Me**, scan icon) with **Read and write** permission. Your devices appear in the project.
 4. **Overview**: copy the **Access ID** and **Access Secret**.
-5. In GoodWe Status: **Settings › Automation**, paste them, pick the data center, **Connect**. Then **Add Device…** and set each device's choices and delay. Turn a device's switch off to leave it alone. A change you make (a device turned on or added, or the choice for the grid's state now) is sent at once.
+5. In GoodWe Status: **Settings › Automation**, paste them, pick the data center, **Connect**. Then **Add Device…** (the ↻ button next to it refreshes the device list) and set each device's choices and delay. Turn a device's switch off to leave it alone. A change you make (a device turned on or added, or the choice for the grid's state now) is sent at once.
 6. The free IoT Core plan lasts about 6 months: renew it under **Cloud › My Services › Extend trial period** (free so far, per users; usually approved within a working day). While it is expired, Settings says so and devices don't change. Trial limits: 26 000 calls a month and 10 devices, far more than this needs (a call per device per grid change).
 
 The keys stay in your Keychain; the device list stays in the app's settings file, never in the repo or the log. Failures show only in Settings, never in the panel or the alert.
@@ -123,7 +123,7 @@ Upload all four with the release: the `.zip` (manual installs), the `.app.tar.gz
 
 ## When GoodWe changes their API
 
-1. Open the log: click the menu bar item, then **Settings › General › Open Log Folder** (`goodwe-status.log`). Each failed call to GoodWe or Tuya writes one line that names the call, what came back and what the app did, for example:
+1. Open the log: click the menu bar item, then **Settings › About › Open Log Folder** (`goodwe-status.log`). Each failed call to GoodWe or Tuya writes one line that names the call, what came back and what the app did, for example:
    - `CHANGED sems+/day today's history · API may have changed: sems+ day missing dataList[item=pBat] · action: … · saved bad-reply-….json`: a field the app reads is gone or renamed (GoodWe or Tuya). The reply is saved next to the log as `bad-reply-….json`, with personal fields removed.
    - `FAIL sems/reading · network: timeout · action: kept the last reading, next poll in 2 min`: GoodWe didn't answer. `body read failed` means the answer was cut off.
    - `STALE sems/reading …` or `STALE sems+/day …`: the reading or today's history stopped moving. An `OK …` line follows when it moves again, or when a failing call works again.

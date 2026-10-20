@@ -42,6 +42,7 @@ pub fn open(app: &AppHandle) {
         st.wanted.store(true, Ordering::SeqCst);
         return;
     }
+    crate::accent::apply(app);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let email = app.state::<Arc<tokio::sync::Mutex<Client>>>().lock().await.account();

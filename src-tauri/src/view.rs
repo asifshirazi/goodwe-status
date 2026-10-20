@@ -25,6 +25,8 @@ pub struct PanelState {
     pub cuts: Option<crate::stats::Cuts>,
     /// T-022: a newer version waits (the gear's dot); set by the shell from the updater.
     pub update_available: bool,
+    /// T-029: Settings › Reduce motion; the panel then opens without its motion (macOS Reduce motion also stops it).
+    pub reduce_motion: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -166,7 +168,15 @@ fn status(m: &Monitor, now: Instant) -> Status {
     }
     match m.grid {
         GridState::Unknown => s("unknown", "Grid status not clear yet"),
-        GridState::On => Status { next: next_lines(m, now), ..s("on", "Grid on") },
+        GridState::On => {
+            let next = next_lines(m, now);
+            // T-029 (owner Q1): no estimate, so the header's second line says since when the grid is on: the
+            // Grid on time of today's last finished cut (the Stats row's time). No cut today, or its end unknown: none.
+            let detail = next.is_none().then(|| crate::stats::today(m, now)).flatten().and_then(|c| c.rows.into_iter().last())
+                .filter(|r| !r.running && !r.on_unknown)
+                .map(|r| format!("Since {}", r.on));
+            Status { detail, next, ..s("on", "Grid on") }
+        }
         GridState::Off => {
             // While stale, "Since …" keeps counting on the station clock and the back line stays.
             let (detail, back) = off_lines(m, now);
@@ -187,7 +197,7 @@ pub fn panel(m: &Monitor, now: Instant, notifications_off: bool) -> PanelState {
         power: rules::fmt_power(b.watts),
         // T-003: no "· as of" while stale: the warning row under it carries the time, and 12 h text wrapped.
         left: rules::time_left_min(b.capacity_kwh, b.soc, b.watts)
-            .map(|min| Left { time: rules::fmt_left(min), rest: format!("left at {} kW", rules::fmt_kw(b.watts)) }),
+            .map(|min| Left { time: rules::fmt_left(min), rest: format!("left at {}", rules::fmt_watts(b.watts)) }),
     });
     let refreshing = m.user_poll && m.signed_in;
     let updated = shown.map(|r| Updated {
@@ -206,6 +216,7 @@ pub fn panel(m: &Monitor, now: Instant, notifications_off: bool) -> PanelState {
         temps: shown.filter(|_| m.show_temps).and_then(|r| temps(m, r, stale)),
         cuts: if m.show_cuts { crate::stats::today(m, now) } else { None },
         update_available: false,
+        reduce_motion: m.reduce_motion,
     }
 }
 
@@ -327,7 +338,7 @@ mod tests {
         assert_eq!(p.status.detail.as_deref(), Some("Since 7:42\u{a0}AM (38 min)"));
         let b = p.battery.unwrap();
         assert_eq!((b.soc.as_str(), b.power.as_str()), ("86%", "Discharging 998 W"));
-        assert_eq!(b.left, Some(Left { time: "~4h 20m".into(), rest: "left at 1.0 kW".into() }));
+        assert_eq!(b.left, Some(Left { time: "~4h 20m".into(), rest: "left at 998 W".into() }));
         assert_eq!(p.updated, Some(Updated { stale: false, text: "Updated 8:20\u{a0}AM".into() }));
         assert_eq!(tray(&m, t), TrayLook { icon: TrayIcon::OffRed, title: Some("86%".into()), tooltip: "Grid off · battery 86%".into() });
 
@@ -335,7 +346,7 @@ mod tests {
         let t = t0 + 135 * MIN;
         let p = panel(&m, t, false);
         assert_eq!(p.status.detail.as_deref(), Some("Since 7:42\u{a0}AM (2h 15m)"));
-        assert_eq!(p.battery.unwrap().left.unwrap().rest, "left at 1.0 kW");
+        assert_eq!(p.battery.unwrap().left.unwrap().rest, "left at 998 W");
         assert_eq!(p.updated, Some(Updated { stale: true, text: "No new data since 8:20\u{a0}AM".into() }));
         assert_eq!(tray(&m, t), TrayLook { icon: TrayIcon::OffDim, title: Some("86%".into()), tooltip: "No new data since 8:20\u{a0}AM".into() });
     }
@@ -734,12 +745,15 @@ mod tests {
         x.remove(&day("2026-10-15 00:00"));
         history(&mut m, x, at("2026-10-18 12:10"));
         assert_eq!(panel(&m, now, false).status.next, None);
+        // T-029 (owner Q1): no estimate, so the subtitle is the Grid on time of today's cut (09:07–12:03)
+        assert_eq!(detail(&m, now).as_deref(), Some("Since 12:04\u{a0}PM"));
         // today's history missing (a "done" cut couldn't be seen)
         let (mut m, now) = live(&[("2026-10-18 12:10", ON)]);
         let mut x = d();
         x.remove(&day("2026-10-18 00:00"));
         history(&mut m, x, at("2026-10-18 12:10"));
         assert_eq!(panel(&m, now, false).status.next, None);
+        assert_eq!(detail(&m, now), None, "no cut seen today: one line");
     }
 
     #[test]
@@ -755,6 +769,7 @@ mod tests {
         m.show_cuts = false;
         assert_eq!(panel(&m, Instant::now(), true).cuts, None);
         assert!(v.get("account").is_none(), "the account is in Settings, never the panel");
+        assert_eq!(v["reduceMotion"], false, "T-029: the opening motion plays unless Settings › Reduce motion is on");
         assert_eq!(v["chart"]["day"], "18 Oct");
         assert_eq!(v["status"], serde_json::json!({ "kind": "on", "title": "Grid on" }), "back and next only when set");
         let st = Status { kind: "off", title: "Grid off", detail: Some("d".into()), back: Some("b".into()), next: Some(["1".into(), "2".into()]) };

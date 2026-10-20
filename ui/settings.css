@@ -1,202 +1,220 @@
-/* Settings window. Four panes (General, Automation, Stats, About) behind a toolbar; each pane is a macOS System Settings form:
-   headed groups of rows, label left, control right. Tokens: the sign-in box's (ui/signin.html) plus the ones marked new. */
-/* D-R3: without this WebKit draws native controls (pop-ups) in their light look in dark mode. Ships. */
-:root{color-scheme:light dark}
-:root{
-  --label:rgba(0,0,0,.85); --label-2:rgba(0,0,0,.55); --label-disabled:rgba(0,0,0,.25); --placeholder:rgba(0,0,0,.55); --accent:#007AFF; --on-accent:#FFFFFF;
-  --error-text:#D70015; --window:#ECECEC; --field:#FFFFFF; --field-edge:rgba(0,0,0,.15); --button:#FFFFFF;
-  /* new */ --link:#0068DA; --group:rgba(255,255,255,.62); --group-edge:rgba(0,0,0,.07); --separator:rgba(0,0,0,.08);
-  --toolbar:#E6E6E6; --tab-selected:rgba(0,0,0,.08); --tab-label:rgba(0,0,0,.60); --tab-icon-selected:#0063E1; --popup-placeholder:rgba(0,0,0,.55); --control-shadow:0 0 0 .5px rgba(0,0,0,.15),0 1px 1px rgba(0,0,0,.06); --fill-hover:rgba(0,0,0,.07); --switch-off:rgba(0,0,0,.10); --switch-edge:rgba(0,0,0,.45); --knob:#FFFFFF; --knob-edge:rgba(0,0,0,.22);
-  --press:150ms; --ease-out:cubic-bezier(.23,1,.32,1);
-  /* T-015 */ --tip-bg:rgba(255,255,255,.97); --tip-edge:rgba(0,0,0,.10); --tip-shadow:0 4px 12px rgba(0,0,0,.18),0 1px 3px rgba(0,0,0,.12); --grid-off:#D70015; --grid-on:#248A3D; /* T-025: panel.css --gw-green */ --track:rgba(0,0,0,.07); --popover:#FFFFFF; --cal-sel:#0063E1;
-  --popover-shadow:0 0 0 .5px rgba(0,0,0,.18),0 8px 24px rgba(0,0,0,.16),0 2px 6px rgba(0,0,0,.08);
-}
-@media (prefers-color-scheme: dark){
-  :root{
-    --label:rgba(255,255,255,.85); --label-2:rgba(255,255,255,.55); --label-disabled:rgba(255,255,255,.25); --placeholder:rgba(255,255,255,.60); --accent:#0A84FF;
-    --error-text:#FF7F78; --window:#2A2A2A; --field:rgba(255,255,255,.06); --field-edge:rgba(255,255,255,.14); --button:rgba(255,255,255,.14);
-    --link:#5CACFF; --group:rgba(255,255,255,.05); --group-edge:rgba(255,255,255,.08); --separator:rgba(255,255,255,.09);
-    --toolbar:#323232; --tab-selected:rgba(255,255,255,.12); --tab-label:rgba(255,255,255,.60); --tab-icon-selected:#5CACFF; --popup-placeholder:rgba(255,255,255,.85); --control-shadow:0 0 0 .5px rgba(255,255,255,.14),0 1px 1px rgba(0,0,0,.30); --fill-hover:rgba(255,255,255,.10); --switch-off:rgba(255,255,255,.16); --switch-edge:rgba(255,255,255,.40); --knob-edge:rgba(0,0,0,.35);
-    /* T-015 */ --tip-bg:rgba(58,58,60,.97); --tip-edge:rgba(255,255,255,.14); --tip-shadow:0 4px 12px rgba(0,0,0,.45),0 1px 3px rgba(0,0,0,.35); --grid-off:#FF6961; --grid-on:#30D158; --track:rgba(255,255,255,.09); --popover:#353535; --cal-sel:#0071E3;
-    --popover-shadow:0 0 0 .5px rgba(255,255,255,.16),0 8px 24px rgba(0,0,0,.50),0 2px 6px rgba(0,0,0,.30);
-  }
-}
-html,body{margin:0;padding:0;height:100%;background:var(--window)}
+@import url("tokens.css");
+/* Settings window, v2 language (T-029). The window is the card (--frame); the pane sits in an inset well (--surface).
+   Panes are lists of rows under muted section labels, split by full-width hairlines; the Stats day sits in one inset panel.
+   The pane switcher is a segmented control with each pane's glyph. Every value is a token from tokens.css (color-scheme too). */
+/* The switch-off edge must stay 3:1 against the well (WCAG 1.4.11); v2 --hairline-strong is under that (build job 1). */
+:root{--switch-edge:rgba(0,0,0,.45)} @media (prefers-color-scheme: dark){ :root{--switch-edge:rgba(255,255,255,.40)} }
+html,body{margin:0;padding:0;height:100%;background:var(--frame)}
 *{box-sizing:border-box}
-/* The window is the page: the toolbar stays, the pane scrolls when the screen is too short. Height follows the content
-   (never stretched to the window), so settings.js reads the visible pane's own height and the window can shrink (B-R1). */
-.win{display:flex;flex-direction:column;max-height:100vh;background:var(--window);color:var(--label);
-  font:13px/1.35 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;-webkit-font-smoothing:antialiased;cursor:default;user-select:none}
-/* Window chrome. The title bar is native (Tauri titleBarStyle Overlay, title = the visible pane's name; close active,
-   minimise and zoom dimmed). The toolbar row ships: it is HTML drawn on --toolbar under the overlaid title bar. */
-.chrome{flex:none;background:var(--toolbar);border-bottom:1px solid var(--separator)}
-/* Title strip: an empty 28 pt drag region under the overlaid native title bar (D-O10, D-O11). */
+.win{display:flex;flex-direction:column;max-height:100vh;background:var(--frame);color:var(--text);
+  font:var(--t-body);-webkit-font-smoothing:antialiased;cursor:default;user-select:none}
+.win .num,.st-tr,.ab-ver{font-variant-numeric:tabular-nums}
+
+/* ---- Window chrome: the native title bar (overlay), then the pane switcher ---- */
+.chrome{flex:none}
 .titlebar{height:28px}
-/* Toolbar: noncustomizable, one item per pane, the active pane always shown selected (HIG Settings). */
-.toolbar{display:flex;justify-content:center;gap:4px;padding:0 0 6px}
-.tab{all:unset;display:flex;flex-direction:column;align-items:center;gap:1px;min-width:64px;padding:4px 8px 3px;border-radius:6px;color:var(--tab-label);font-size:11px;line-height:14px} /* 5.4 / 5.7 on the toolbar */
-.tab svg{width:22px;height:22px}
-.tab[aria-selected="true"]{background:var(--tab-selected);color:var(--label)}
-.tab[aria-selected="true"] svg{color:var(--tab-icon-selected)} /* 3.6 / 3.7 on the selected fill (icons ≥ 3:1) */
-@media (hover:hover){ .tab:not([aria-selected="true"]):hover{color:var(--label)} }
-.tab:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent)}
-.body{flex:0 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;padding:16px 20px 20px}
-.grp.first{margin-top:0}
-h2{font-size:13px;font-weight:600;margin:18px 0 6px 2px}
-.grp{background:var(--group);border:1px solid var(--group-edge);border-radius:8px}
-.row{display:flex;align-items:center;gap:12px;min-height:40px;padding:8px 12px;position:relative}
-.row + .row::before{content:"";position:absolute;top:0;left:12px;right:12px;height:1px;background:var(--separator)}
-.lbl{flex:1;min-width:0} .lbl small{display:block;font-size:11px;color:var(--label-2);margin-top:2px}
-.lbl small.err{color:var(--error-text)}
-.row p{margin:0;font-size:12px;color:var(--label-2)}
-/* Fields and pop-ups: the sign-in box's. */
-input{width:240px;height:22px;padding:0 7px;margin:0;background:var(--field);color:var(--label);border:1px solid var(--field-edge);border-radius:5px;font:inherit;font-size:13px;outline:none;user-select:text}
-input::placeholder{color:var(--placeholder)} /* T-009: 4.7:1 light, 4.9:1 dark on the field */
-input:focus,select:focus-visible{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 45%,transparent);border-color:var(--accent)}
-/* Pop-ups ship with appearance:auto: WebKit draws the real macOS pop-up button and menu (D-R2). */
-select{height:22px;margin:0;font:inherit;font-size:13px;color:var(--label);appearance:auto}
-select:disabled{color:var(--label-disabled)} select.is-placeholder{color:var(--popup-placeholder)} /* D-O6: dark 6.3:1 */
+/* The toolbar row is the drag region; the segmented control sits centred in it (D-O10: tabs stay clickable). */
+.tab{all:unset;position:relative;display:flex;align-items:center;gap:6px;height:28px;padding:0 12px;border-radius:7px;
+  color:var(--text-2);font:var(--t-label);font-weight:500;transition:color var(--press) ease-out}
+.tab svg{width:16px;height:16px}
+.tab[aria-selected="true"]{background:var(--surface-3);color:var(--text);box-shadow:inset 0 0 0 1px var(--hairline)}
+@media (prefers-color-scheme: light){ .tab[aria-selected="true"]{color:var(--text);background:color-mix(in srgb,var(--accent) 14%,var(--surface));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 30%,transparent)} } /* light: the selected pane shows the accent as its tint and edge; label and glyph stay --text (D-O4: no text in the accent) */
+@media (hover:hover){ .tab:not([aria-selected="true"]):hover{color:var(--text)} }
+.tab:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+/* The track behind the four tabs */
+.toolbar{display:flex;gap:2px;width:max-content;margin:2px auto 10px;padding:3px;border-radius:10px;background:var(--surface)}
+
+/* ---- Body: sections ---- */
+/* The inset well (owner, second references): the pane sits in it, the frame shows round it */
+.body{flex:0 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;margin:0 8px 8px;padding:0 18px 16px;border-radius:10px;background:var(--surface)}
+.body h2{font:var(--t-label);color:var(--text-2);margin:0 -18px;padding:14px 18px 2px;border-top:1px solid var(--hairline)}
+h2.first,.body>h2:first-child{border-top:0}
+/* A section heading with actions on its line (Devices: Refresh, Add Device…) */
+.body .h2row{display:flex;align-items:center;gap:8px;margin:0 -18px;padding:10px 18px 2px;border-top:1px solid var(--hairline)}
+.body .h2row h2{flex:1;margin:0;padding:0;border:0}
+.h2row .acts{display:flex;align-items:center;gap:6px}
+.h2row select{max-width:200px}
+.icon-btn{all:unset;flex:none;display:grid;place-items:center;width:28px;height:28px;border-radius:var(--r-ctl);box-shadow:inset 0 0 0 1px var(--edge);color:var(--text-2);transition:background-color var(--press) ease-out,scale var(--press) ease-out}
+.icon-btn svg{width:15px;height:15px}
+@media (hover:hover){ .icon-btn:not([aria-disabled="true"]):hover{background:var(--fill-hover);color:var(--text)} }
+@media (prefers-reduced-motion:no-preference){ .icon-btn:not([aria-disabled="true"]):active{scale:.96} .icon-btn.is-busy svg{animation:spin .8s linear infinite} }
+.icon-btn:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.icon-btn[aria-disabled="true"]{color:var(--text-3)}
+.grp{background:none;border:0}
+.row{display:flex;align-items:center;gap:var(--s3);min-height:44px;padding:10px 0;position:relative}
+.row + .row::before{content:"";position:absolute;top:0;left:0;right:0;height:1px;background:var(--hairline)}
+.lbl{flex:1;min-width:0} .lbl>span,.lbl>label{font:var(--t-body)} .lbl small{display:block;font:var(--t-label);color:var(--text-2);margin-top:2px}
+.lbl small.err{color:var(--alert)}
+.row p{margin:0;font:var(--t-label);color:var(--text-2)}
+.grp + .foot,.grp + .ab-foot{margin-top:2px}
+.foot + h2,.ab-foot + h2{margin-top:14px}
+
+/* Fields and pop-ups */
+input{width:240px;height:28px;padding:0 10px;margin:0;background:var(--surface-2);color:var(--text);border:1px solid var(--hairline-strong);border-radius:var(--r-field);font:var(--t-body);outline:none;user-select:text}
+input::placeholder{color:var(--text-2)}
+input:focus,select:focus-visible{border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 30%,transparent)}
+/* Pop-ups stay native (appearance:auto): WebKit draws the macOS pop-up button and menu in this color-scheme (D-R2). */
+select{height:28px;margin:0;font:var(--t-body);color:var(--text);appearance:auto}
+select:disabled{color:var(--text-3)} select.is-placeholder{color:var(--text-2)}
 .row select.wide{width:240px}
-button.btn{height:22px;padding:0 12px;border-radius:5px;border:0;background:var(--button);color:var(--label);font:inherit;font-size:13px;box-shadow:var(--control-shadow);outline:none}
-button.btn.def{background:var(--accent);color:var(--on-accent);box-shadow:none}
-button.btn:focus-visible{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 45%,transparent)}
+/* Buttons: secondary = raised dark fill with a hairline; primary (.def) = white fill, black text (light: inverted). */
+button.btn{flex:none;height:30px;padding:0 14px;border-radius:var(--r-ctl);border:0;background:var(--surface-3);color:var(--text);font:var(--t-body);font-weight:500;
+  box-shadow:inset 0 0 0 1px var(--hairline);outline:none;transition:background-color var(--press) ease-out,scale var(--press) ease-out}
+@media (hover:hover){ button.btn:not([aria-disabled="true"]):not(.def):hover{background:color-mix(in srgb,var(--surface-3),var(--text) 6%)} }
+@media (prefers-reduced-motion:no-preference){ button.btn:not([aria-disabled="true"]):active{scale:.97} }
+button.btn.def{background:var(--primary);color:var(--on-primary);box-shadow:none}
+/* Danger (owner): Sign Out, Disconnect. Red-pink text on its tint with a tinted edge, as the references' alert tag. */
+button.btn.is-danger{color:var(--alert);background:var(--tint-alert);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--alert) 35%,transparent)}
+@media (hover:hover){ button.btn.is-danger:not([aria-disabled="true"]):hover{background:color-mix(in srgb,var(--alert) 18%,transparent)} }
+button.btn[aria-disabled="true"]:not(.def){color:var(--text-3)}
+button.btn:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 .spin{display:inline-block;width:11px;height:11px;border-radius:50%;border:1.5px solid currentColor;border-right-color:transparent;vertical-align:-1px;margin-right:6px;animation:spin .8s linear infinite}
 @keyframes spin{to{rotate:360deg}} @media (prefers-reduced-motion:reduce){.spin{animation:none;opacity:.6}}
-a{color:var(--link);text-decoration:none;font-size:12px;cursor:pointer} @media (hover:hover){a:hover{text-decoration:underline}}
-a:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent);outline-offset:1px;border-radius:3px}
-.err{color:var(--error-text);font-size:11px}
+a{color:var(--link);text-decoration:none;font:var(--t-label);cursor:pointer} @media (hover:hover){a:hover{text-decoration:underline}}
+a:focus-visible{outline:2px solid var(--focus);outline-offset:1px;border-radius:3px}
+.err{color:var(--alert);font:var(--t-label)}
 
-/* Switch: the macOS small switch (32 × 18), its ::before widens the target to 40 × 28. */
-.switch{all:unset;flex:none;position:relative;width:32px;height:18px;border-radius:9px;background:var(--switch-off);transition:background-color var(--press) ease-out}
+/* Switch (32 × 18, target 40 × 28): on = --switch-on (dark mint, light the accent) with a knob in the well colour. */
+.switch{all:unset;flex:none;position:relative;width:32px;height:18px;border-radius:9px;background:var(--surface-3);box-shadow:inset 0 0 0 1px var(--switch-edge);transition:background-color var(--press) ease-out}
 .switch::before{content:"";position:absolute;inset:-5px -4px}
-.switch i{position:absolute;top:1px;left:1px;width:16px;height:16px;border-radius:50%;background:var(--knob);box-shadow:0 0 0 .5px var(--knob-edge),0 1px 1.5px var(--knob-edge)}
-.switch[aria-checked="false"]{box-shadow:inset 0 0 0 1px var(--switch-edge)} /* 3:1 against the group (WCAG 1.4.11) */
-.switch[aria-checked="true"]{background:var(--accent)}
-.switch[aria-checked="true"] i{translate:14px 0}
-.switch[aria-disabled="true"]{opacity:.45}
-@media (prefers-reduced-motion:no-preference){ .switch i{transition:translate var(--press) var(--ease-out)} }
-.switch:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.switch i{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--text-2)}
+.switch[aria-checked="true"]{background:var(--switch-on);box-shadow:none}
+.switch[aria-checked="true"] i{translate:14px 0;background:var(--surface)}
+.switch[aria-disabled="true"]{opacity:.4}
+@media (prefers-reduced-motion:no-preference){ .switch i{transition:translate var(--t-ui) var(--ease-out),background-color var(--press) ease-out} }
+.switch:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 @media (forced-colors:active){ .switch{border:1px solid CanvasText} .switch[aria-checked="true"]{background:Highlight} .switch i{background:CanvasText} select,button,input{border:1px solid ButtonText} }
 
-/* Devices (Change 2, 3): name | grid off | grid on | delay | remove | switch, the status line across under them.
-   Window 560: inner row 494 → name 1fr ≈ 114, choices 106 (fits "Switch 1 Off"), delay 76 (fits "Instant"), switch 32. */
-.devices .hd,.devices .lt{display:grid;grid-template-columns:minmax(0,1fr) 102px 102px 76px 20px 40px;gap:8px;align-items:center}
-/* B-Y7: 16 pt between Remove and the switch (the switch column is 8 pt wider, the switch sits at its right edge). */
+/* ---- Automation: devices (Change 2, 3) ---- */
+.devices .hd,.devices .lt{display:grid;grid-template-columns:minmax(0,1fr) 100px 100px 76px 22px 40px;gap:8px;align-items:center}
 .devices .lt>.switch{justify-self:end}
-/* B-Y8: a device that is switched off shows its name in the secondary colour. */
-.devices .lt.off .nm b{color:var(--label-2)}
-.devices .hd{min-height:30px;font-size:11px;color:var(--label-2)}
+.devices .lt.off .nm b{color:var(--text-2)}
+.devices .hd{min-height:30px;padding:6px 0 4px;font:var(--t-caption);color:var(--text-2)}
 .devices .lt select{width:100%}
-.devices .nm{min-width:0} .devices .nm b{display:block;font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.devices .lt>small{grid-column:1/-1;margin-top:-4px;font-size:11px;color:var(--label-2)}
-.devices .lt>small.err{color:var(--error-text)}
-.devices .wait{grid-column:span 3;font-size:12px;color:var(--label-2)}
-/* Footnote under a group (System Settings style). */
-.foot{margin:6px 2px 0;font-size:11px;color:var(--label-2)}
-/* Change 3: the Automation pane opens with one line of intro (the old switch row's helper), no switch. */
-.intro{margin:0 2px;font-size:12px;color:var(--label-2)}
-.rm{all:unset;display:grid;place-items:center;width:20px;height:20px;border-radius:5px;color:var(--label-2)}
-@media (hover:hover){ .rm:hover{background:var(--fill-hover);color:var(--label)} }
-.rm:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent)} .rm svg{width:14px;height:14px}
+.devices .nm{min-width:0;display:flex;align-items:center;gap:8px} .devices .nm b{display:block;min-width:0;font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Device status dot (owner): 8 pt, its words in the tooltip; the 16 pt box is the hover target */
+.st-dot{flex:none;position:relative;display:grid;place-items:center;width:16px;height:16px;margin-left:-4px;cursor:default}
+.st-dot::before{content:"";width:8px;height:8px;border-radius:50%}
+.st-dot.is-ok::before{background:var(--d-mint)} .st-dot.is-bad::before{background:var(--alert)} .st-dot.is-wait::before{background:var(--d-yellow)}
+.st-dot.is-none::before{background:none;box-shadow:inset 0 0 0 1px var(--text-3)}
+.st-dot.is-busy::before{content:none} .st-dot.is-busy .spin{width:9px;height:9px;margin:0;color:var(--text-2)}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.devices .lt>small{grid-column:1/-1;margin-top:-2px;font:var(--t-label);color:var(--text-2)}
+.devices .lt>small.err{color:var(--alert)}
+.devices .wait{grid-column:span 3;font:var(--t-label);color:var(--text-2)}
+.foot{margin:2px 0 0;font:var(--t-caption);color:var(--text-2)}
+.foot.has-info{display:flex;gap:8px;align-items:flex-start;margin-top:4px;padding:10px 0 2px;border-top:1px solid var(--hairline)}
+.foot.has-info svg{flex:none;width:14px;height:14px;margin-top:0;color:var(--text-2)}
+.intro{margin:14px 0 4px;font:var(--t-label);color:var(--text-2)}
+.intro + h2,.intro + .h2row{margin-top:10px}
+.rm{all:unset;display:grid;place-items:center;width:22px;height:22px;border-radius:6px;color:var(--text-2)}
+@media (hover:hover){ .rm:hover{background:var(--fill-hover);color:var(--text)} }
+.rm:focus-visible{outline:2px solid var(--focus)} .rm svg{width:14px;height:14px}
 .devices .lt>small .spin{width:9px;height:9px;margin-right:5px}
-h2.first{margin-top:0}
+/* Remove (owner): danger red, filled glyph; hover a red tint behind it */
+.devices .rm{color:var(--alert)} .devices .rm svg{width:15px;height:15px} .devices .rm svg .bar{stroke:var(--surface)} /* owner: the bar is the background, cut out of the disc */
+@media (hover:hover){ .devices .rm:hover{color:var(--alert);background:var(--tint-alert)} }
 .lbl small.one{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.connecting{font-size:12px;color:var(--label-2)} .connecting .spin{margin-right:5px}
+.connecting{font:var(--t-label);color:var(--text-2)} .connecting .spin{margin-right:5px}
 
-/* ---- T-015 · Stats pane ----
-   One height on every day (spec › Window height): header 22 · 12 · group (summary 66 + table 202) · footer ≥ 42. */
-.st-head{position:relative;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+/* ---- Stats (T-015): header controls, then one inset panel (summary + strip + table), then the footer ---- */
+.st-head{position:relative;display:flex;align-items:center;justify-content:space-between;gap:12px;margin:16px 0 12px}
 .st-head svg{width:14px;height:14px;flex:none}
-.st-date{display:inline-flex;align-items:center;gap:6px;padding:0 8px 0 7px} /* 1 pt less on the icon side (optical) */
-.st-date svg:last-child{width:10px;height:10px;color:var(--label-2)}
-/* Day stepper: one segmented control, as Calendar's ‹ Today › (HIG › Segmented controls, momentary). */
-.seg{display:inline-flex;height:22px;border-radius:5px;background:var(--button);box-shadow:var(--control-shadow);border:1px solid transparent;overflow:hidden}
-.seg button{all:unset;display:grid;place-items:center;min-width:26px;padding:0 8px;font-size:13px;color:var(--label);position:relative;transition:background-color var(--press) ease-out}
-.seg button+button::before{content:"";position:absolute;left:0;top:4px;bottom:4px;width:1px;background:var(--separator)}
-.seg button:first-child,.seg button:last-child{padding:0 6px}
-.seg button:not([aria-disabled="true"]):active{background:var(--fill-hover)}
-.seg button[aria-disabled="true"]{color:var(--label-disabled)}
-.seg button:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent);outline-offset:-2px;border-radius:5px}
-.st-sum{padding:10px 12px 6px}
-.st-sum p{margin:0 0 8px}
+.st-date{display:inline-flex;align-items:center;gap:8px;padding:0 10px}
+.st-date span{font-family:var(--font-mono);font-weight:400;font-size:12.5px}
+.st-date svg:last-child{width:10px;height:10px;color:var(--text-2)}
+/* Day stepper: a segmented control (‹ Today ›), momentary */
+.seg{display:inline-flex;height:28px;padding:2px;gap:2px;border-radius:var(--r-ctl);background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--hairline)}
+.seg button{all:unset;display:grid;place-items:center;min-width:28px;padding:0 10px;border-radius:6px;font:var(--t-label);font-weight:500;color:var(--text);transition:background-color var(--press) ease-out}
+.seg button:first-child,.seg button:last-child{padding:0 7px}
+@media (hover:hover){ .seg button:not([aria-disabled="true"]):hover{background:var(--surface-3)} }
+.seg button:not([aria-disabled="true"]):active{background:var(--fill-press)}
+.seg button[aria-disabled="true"]{color:var(--text-3)}
+.seg button:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.grp.st{background:var(--surface-2);border-radius:12px;box-shadow:inset 0 0 0 1px var(--hairline)}
+.st-sum{padding:14px 16px 8px}
+.st-sum p{margin:0 0 12px;font:var(--t-body)}
 .strip{display:block;overflow:visible}
 .strip .track{fill:var(--track)} .strip .cut{fill:var(--grid-off);transition:opacity var(--press) ease-out}
-/* Strip read-out (owner): the panel chart's tooltip card (same tokens as panel.css › T-002), centred above the cut. */
 .st-plot{position:relative;border-radius:4px;outline:none}
-.st-plot:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent);outline-offset:4px}
+.st-plot:focus-visible{outline:2px solid var(--focus);outline-offset:4px}
 .strip .hit{fill:transparent;cursor:default}
-.st-plot.is-reading .cut:not(.is-on){opacity:.4}
-.st-tip{position:absolute;z-index:1;bottom:calc(100% + 2px);min-width:120px;max-width:220px;padding:4px 8px;border-radius:8px;pointer-events:none;
-  background:var(--tip-bg);border:1px solid transparent;box-shadow:0 0 0 .5px var(--tip-edge),var(--tip-shadow);font-size:12px;line-height:16px;color:var(--label);white-space:nowrap}
+.st-plot.is-reading .cut:not(.is-on){opacity:.35}
+.st-tip{position:absolute;z-index:1;bottom:calc(100% + 4px);min-width:120px;max-width:220px;padding:6px 8px 7px;border-radius:var(--r-tip);pointer-events:none;
+  background:var(--tip-bg);box-shadow:0 0 0 1px var(--tip-edge),var(--pop-shadow);font:var(--t-label);color:var(--text);white-space:nowrap}
 .st-tip[hidden]{display:none}
 .st-tip p{margin:0}
-.st-tip-time{font-size:11px;line-height:14px;color:var(--label-2);margin-bottom:4px !important;font-variant-numeric:tabular-nums}
-.st-tip-row{display:flex;align-items:center;gap:4px}
-.st-tip-row i{flex:none;width:8px;height:2px;border-radius:1px;background:var(--grid-off)}
-.st-tip-row i.on{background:var(--grid-on)} .st-tip-row i.gap{background:repeating-linear-gradient(90deg,var(--label-2) 0 2px,transparent 2px 4px)} /* T-025 */
-.st-tip-row span{flex:1;color:var(--label-2)} .st-tip-row b{font-weight:600;margin-left:8px}
+.st-tip-time{font:var(--t-mono-sm);color:var(--text-2);margin-bottom:3px !important}
+.st-tip-row{display:flex;align-items:center;gap:6px;line-height:18px}
+.st-tip-row i{flex:none;width:6px;height:6px;border-radius:1.5px;background:var(--grid-off)}
+.st-tip-row i.on{background:var(--grid-on)} .st-tip-row i.gap{background:repeating-linear-gradient(90deg,var(--text-2) 0 2px,transparent 2px 4px)}
+.st-tip-row span{flex:1;color:var(--text-2)} .st-tip-row b{font:var(--t-mono);font-size:12px;margin-left:8px}
 .st-rows .st-tr.is-on{background:var(--fill-hover)}
 .st-rows .st-tr.is-on::before,.st-rows .st-tr.is-on+.st-tr::before{opacity:0}
-@media (forced-colors:active){ .st-tip{border-color:CanvasText} }
-.strip .track-rest{fill:none;stroke:var(--label-2);stroke-dasharray:2 3} /* D-Y2: 4.7:1 / 4.9:1, the only mark for unknown hours */
-.strip .now{stroke:var(--label);stroke-width:1.5;stroke-linecap:round}
-.strip text{font-size:10px;fill:var(--label-2);font-variant-numeric:tabular-nums}
-.st-table{border-top:1px solid var(--separator)}
-.st-tr{display:grid;grid-template-columns:1fr 1fr 1fr;align-items:center;gap:12px;min-height:32px;padding:0 12px;position:relative;font-variant-numeric:tabular-nums}
+@media (forced-colors:active){ .st-tip{border:1px solid CanvasText} }
+.strip .track-rest{fill:none;stroke:var(--text-2);stroke-dasharray:1 3;stroke-linecap:round}
+.strip .now{stroke:var(--text);stroke-width:1.5;stroke-linecap:round}
+.strip text{font-family:var(--font-mono);font-size:9.5px;fill:var(--text-2)}
+.st-table{border-top:1px solid var(--hairline)}
+.st-tr{display:grid;grid-template-columns:1fr 1fr 1fr;align-items:center;gap:12px;min-height:32px;padding:0 16px;position:relative;font:var(--t-mono)}
 .st-tr>span:last-child{justify-self:end}
-.st-rows .st-tr+.st-tr::before{content:"";position:absolute;top:0;left:12px;right:12px;height:1px;background:var(--separator)}
-.st-th{min-height:26px;font-size:11px;color:var(--label-2);border-bottom:1px solid var(--separator)}
+.st-rows .st-tr+.st-tr::before{content:"";position:absolute;top:0;left:16px;right:16px;height:1px;background:var(--hairline)}
+.st-th{min-height:28px;font:var(--t-caption);color:var(--text-2);border-bottom:1px solid var(--hairline)}
 .st-rows{height:176px;overflow:auto;overscroll-behavior:contain} /* 5½ rows of 32: a 6th row peeks, so a longer day shows it scrolls */
-.st-tr em{font-style:normal;color:var(--label-2)}
-.st-tr.is-running b{font-weight:600}
-.st-msg{height:202px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:0 24px;text-align:center;color:var(--label-2)}
+.st-tr em{font-style:normal;font-family:var(--font-sans);color:var(--text-2)}
+/* The running cut: 'Still off' as an alert pill (a status, so it may look like a tag) */
+.st-tr.is-running b{justify-self:start;font:var(--t-mono);font-size:12px;line-height:20px;color:var(--alert);background:var(--tint-alert);padding:0 8px;border-radius:var(--r-pill);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--alert) 40%,transparent)}
+.st-msg{height:204px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:0 24px;text-align:center;color:var(--text-2);font:var(--t-body)}
 .st-msg p{margin:0;max-width:40ch}
-.st-foot{display:flow-root;min-height:48px} /* flow-root keeps the note's margin inside, so every state is one height */
-.st-line{display:flex;align-items:center;gap:8px;margin:6px 2px 0;font-size:11px;color:var(--label-2)}
-.st-line svg{width:13px;height:13px;flex:none;color:var(--label)}
+.st-foot{display:flow-root;min-height:48px}
+.st-foot .foot{margin-top:8px}
+.st-line{display:flex;align-items:center;gap:8px;margin:6px 0 0;font:var(--t-caption);color:var(--text-2)}
+.st-line svg{width:13px;height:13px;flex:none;color:var(--alert)}
 .st-line .btn{margin-left:auto}
 .bar{flex:none;width:120px;height:4px;border-radius:2px;background:var(--track);overflow:hidden}
-.bar i{display:block;height:100%;border-radius:2px;background:var(--accent)}
-/* Calendar: a popover under the date button (NSDatePicker's graphical calendar). */
-.cal{position:absolute;z-index:2;top:30px;left:0;width:236px;padding:10px 12px 10px;border-radius:10px;border:1px solid transparent;background:var(--popover);box-shadow:var(--popover-shadow)}
-.cal-head{display:flex;align-items:center;gap:2px;margin-bottom:6px}
-.cal-head b{flex:1;font-weight:600;padding-left:2px}
-.cal-head .rm[aria-disabled="true"]{color:var(--label-disabled)}
-@media (hover:hover){ .cal-head .rm[aria-disabled="true"]:hover{background:none;color:var(--label-disabled)} }
-.cal-grid{display:grid;grid-template-columns:repeat(7,30px);row-gap:2px}
-.cal .wd{height:18px;display:grid;place-items:center;font-size:10px;color:var(--label-2)}
-.cal .day{all:unset;position:relative;width:28px;height:28px;margin:0 auto;border-radius:50%;display:grid;place-items:center;font-size:12px;font-variant-numeric:tabular-nums;color:var(--label)}
+.bar i{display:block;height:100%;border-radius:2px;background:var(--text)}
+/* Calendar popover under the date button: the tooltip's dark box at a larger size, days in mono */
+.cal{position:absolute;z-index:2;top:34px;left:0;width:244px;padding:12px;border-radius:12px;background:var(--tip-bg);box-shadow:0 0 0 1px var(--tip-edge),var(--pop-shadow)}
+.cal-head{display:flex;align-items:center;gap:2px;margin-bottom:8px}
+.cal-head b{flex:1;font:var(--t-body);font-weight:500;padding-left:4px}
+.cal-head .rm[aria-disabled="true"]{color:var(--text-3)}
+@media (hover:hover){ .cal-head .rm[aria-disabled="true"]:hover{background:none;color:var(--text-3)} }
+.cal-grid{display:grid;grid-template-columns:repeat(7,31px);row-gap:2px}
+.cal .wd{height:18px;display:grid;place-items:center;font:var(--t-caption);color:var(--text-2)}
+.cal .day{all:unset;position:relative;width:28px;height:28px;margin:0 auto;border-radius:7px;display:grid;place-items:center;font-family:var(--font-mono);font-size:11.5px;color:var(--text)}
 .cal .day.has-cut::after{content:"";position:absolute;bottom:3px;left:50%;width:4px;height:4px;margin-left:-2px;border-radius:50%;background:var(--grid-off)}
-.cal .day.is-today{color:var(--link);font-weight:600}
-.cal .day[aria-disabled="true"]{color:var(--label-disabled)}
+.cal .day.is-today{box-shadow:inset 0 0 0 1px var(--hairline-strong)}
+.cal .day[aria-disabled="true"]{color:var(--text-3)}
 @media (hover:hover){ .cal .day:not([aria-disabled="true"]):not(.is-sel):hover{background:var(--fill-hover)} }
-.cal .day.is-sel{background:var(--cal-sel);color:#fff;font-weight:600}
-.cal .day.is-sel::after{background:#fff}
-.cal .day:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent);outline-offset:1px}
-.cal-key{display:flex;align-items:center;gap:6px;margin:8px 2px 0;font-size:11px;color:var(--label-2)}
+.cal .day.is-sel{background:var(--primary);color:var(--on-primary)}
+.cal .day.is-sel::after{background:var(--grid-off)}
+.cal .day:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+.cal-key{display:flex;align-items:center;gap:6px;margin:10px 4px 0;font:var(--t-caption);color:var(--text-2)}
 .cal-key i{width:4px;height:4px;border-radius:50%;background:var(--grid-off)}
 @media (forced-colors:active){ .strip .cut{fill:Highlight} .cal .day.is-sel{background:Highlight;color:HighlightText} .cal .day.has-cut::after,.cal-key i{background:CanvasText} }
 
-/* ---- T-022 · About ---- */
-.tab{position:relative}
-.tab .dot,.gw-dot{position:absolute;top:3px;right:calc(50% - 15px);width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 1.5px var(--toolbar)}
-.ab-hero{display:flex;align-items:center;gap:16px;padding:4px 2px 2px}
-.ab-hero img{flex:none;width:64px;height:64px}
-.ab-hero h1{margin:0;font-size:17px;line-height:22px;font-weight:600}
-.ab-hero p{margin:1px 0 0;font-size:12px;color:var(--label-2)}
-.ab-name{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:6px}
-.ab-ver{font-size:12px;color:var(--label);font-variant-numeric:tabular-nums;white-space:nowrap;user-select:text;cursor:text}
+
+/* ---- About (T-022): the card header (app icon · name · version), Updates, Project ---- */
+.tab .dot{position:absolute;top:4px;right:4px;width:6px;height:6px;border-radius:50%;background:var(--badge);box-shadow:0 0 0 1.5px var(--surface)}
+.tab[aria-selected="true"] .dot{box-shadow:0 0 0 1.5px var(--surface-3)}
+.ab-hero{display:flex;align-items:center;gap:14px;padding:18px 0 16px}
+.ab-hero img{flex:none;width:52px;height:52px}
+.ab-hero h1{margin:0;font:var(--t-title)}
+.ab-hero p{margin:2px 0 0;font:var(--t-label);color:var(--text-2)}
+.ab-name{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:8px}
+.ab-ver{font-family:var(--font-mono);font-size:12px;color:var(--text-2);white-space:nowrap;user-select:text;cursor:text}
+.ab-hero + h2{border-top:1px solid var(--hairline)}
 .ab-state{display:flex;align-items:center}
-.ab-state svg{width:13px;height:13px;flex:none;margin-right:6px;color:var(--label)}
-.ab-gh{width:20px;height:20px;flex:none;color:var(--label)} /* T-027: macOS row-icon size; the row's 12 pt gap spaces it */
-.ab-prog{display:flex;align-items:center;gap:10px;height:15px;margin-top:2px} /* the height of the small line it replaces: no jump */
+.ab-state svg{width:13px;height:13px;flex:none;margin-right:6px;color:var(--alert)}
+.ab-state.is-warn{color:var(--text)}
+.ab-gh{width:20px;height:20px;flex:none;color:var(--text)}
+.ab-prog{display:flex;align-items:center;gap:10px;height:16px;margin-top:2px}
 .ab-prog .bar{flex:1;width:auto}
-.ab-prog small{margin:0;line-height:15px;font-variant-numeric:tabular-nums;white-space:nowrap}
-.ab-notes ul{margin:4px 0 6px;padding-left:16px;font-size:12px;color:var(--label-2)}
+.ab-prog small{margin:0 !important;font-family:var(--font-mono) !important;font-size:11px !important;white-space:nowrap}
+.ab-notes ul{margin:6px 0 8px;padding-left:16px;font:var(--t-label);color:var(--text-2)}
 .ab-notes li + li{margin-top:2px}
-.ab-notes a{display:inline-flex;align-items:center;gap:3px;font-size:12px;color:var(--link);text-decoration:none}
-.ab-notes a:hover{text-decoration:underline}
+.ab-notes a{display:inline-flex;align-items:center;gap:3px}
 .ab-notes a svg{width:11px;height:11px}
-.ab-foot{margin:6px 2px 0;font-size:11px;color:var(--label-2)}
-.ab-lic{margin:16px 0 0;text-align:center;font-size:11px;color:var(--label-2)}
+.ab-foot{margin:2px 0 0;font:var(--t-caption);color:var(--text-2)}
+.ab-lic{margin:16px -18px 0;padding:14px 18px 0;border-top:1px solid var(--hairline);text-align:center;font:var(--t-caption);color:var(--text-2)}
 @media (forced-colors:active){ .tab .dot{background:Highlight} }

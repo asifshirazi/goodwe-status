@@ -17,6 +17,7 @@
     const reading = plot && (plot.matches(':hover') || a === plot) && plot.dataset.at != null
       ? { at: +plot.dataset.at, kb: plot.dataset.kb, focus: a === plot } : null;
     const strip = a && a.classList.contains('gw-strip-plot') ? a.dataset.kb : null; // T-020: keyboard on a cut
+    document.documentElement.classList.toggle('reduce-motion', !!s.reduceMotion); // B-Y4: tokens.css stills
     root.innerHTML = GW.renderPanel(s);
     GW.bindChart(root);
     if (focused && strip == null) { // the strip restores its own cut below
@@ -33,6 +34,11 @@
     if (s.refreshing && !(was && was.refreshing)) busySince = Date.now();
     invoke('panel_height', { h: root.firstElementChild.getBoundingClientRect().height });
   }
+
+  // T-029: the opening motion, only when the panel window is shown (Rust sends this right after the state). Off with
+  // Settings › Reduce motion; animateOpen also skips it when macOS asks for reduced motion.
+  // Registered before 'state': the done/ stage pages' bridge stub keeps only the last listener.
+  listen('panel-opened', () => GW.animateOpen(root, { reduce: !!(state && state.reduceMotion) }));
 
   listen('state', e => {
     clearTimeout(held);

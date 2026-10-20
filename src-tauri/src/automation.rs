@@ -48,6 +48,8 @@ pub struct Store {
     pub show_temps: Option<bool>,
     /// Settings › General › Show today's power cuts (unset: on, T-020).
     pub show_cuts: Option<bool>,
+    /// Settings › General › Reduce motion (unset: off, T-029): no opening motion in the panel, no pane fade.
+    pub reduce_motion: Option<bool>,
 }
 
 impl Store {
@@ -459,6 +461,14 @@ impl Automation {
     pub fn set_show_cuts(&self, on: bool) {
         let mut st = self.st.lock().unwrap();
         st.store.show_cuts = Some(on);
+        self.save(&st);
+    }
+    pub fn reduce_motion(&self) -> bool {
+        self.st.lock().unwrap().store.reduce_motion.unwrap_or(false)
+    }
+    pub fn set_reduce_motion(&self, on: bool) {
+        let mut st = self.st.lock().unwrap();
+        st.store.reduce_motion = Some(on);
         self.save(&st);
     }
     /// Saves the setting, kept in range; returns the value saved.

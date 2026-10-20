@@ -1,0 +1,72 @@
+/* GoodWe Status v2 design tokens (T-029): the one layer for the panel, Settings and the sign-in box.
+   Mirrors design/v2/tokens.css. Light is :root, dark follows the system (prefers-color-scheme), as in the hand-off.
+   --accent: WKWebView's CSS AccentColor is always blue (T-029 research Q2), so the app sets --mac-accent on <html>
+   from NSColor.controlAccentColor; light reads it, with the design's blue as fallback. Text never takes it (D-O4). */
+:root{
+  color-scheme:light dark;
+  /* Surfaces: the card is the window. Greyscale only. */
+  --frame:#F1F1F3; --surface:#FFFFFF; --surface-2:#F4F4F5; --surface-3:#EBEBED; --rim:#E2E2E5;
+  --edge:rgba(0,0,0,.08); --hairline:rgba(0,0,0,.06); --hairline-strong:rgba(0,0,0,.16);
+
+  /* Text */
+  --text:#141416; --text-2:#606067; --text-3:#8C8C93; /* --text-3: disabled and quiet marks only */
+  --accent:var(--mac-accent,#0064E1); /* switches and focus rings only */
+  --primary:#141416; --on-primary:#FFFFFF; /* neutral fill, D-O4 */
+
+  /* Data palette: data only */
+  --d-purple:#7357D8; --d-blue:#2F66D6; --d-steel:#557A9F; --d-yellow:#A87C0A; --d-mint:#16865A; --d-pink:#B9408A;
+  --alert:#B21E3D; --warn-text:#8A6400;
+  --tint-mint:rgba(22,134,90,.12); --tint-alert:rgba(178,30,61,.10); --tint-blue:rgba(47,102,214,.10);
+
+  /* Roles: a thing has one colour on every screen. --link is text, so never the accent (director on D-O4). */
+  --grid-on:var(--d-mint); --grid-off:var(--alert); --soc:var(--d-blue); --kw:var(--d-yellow); --kw-fill:rgba(168,124,10,.14);
+  --badge:var(--d-blue); --focus:var(--accent); --link:#0058C7; --switch-on:var(--accent);
+
+  /* States */
+  --fill-hover:rgba(0,0,0,.05); --fill-press:rgba(0,0,0,.09); --track:rgba(0,0,0,.07);
+
+  /* Overlays: tooltip and popover */
+  --tip-bg:#FFFFFF; --tip-edge:rgba(0,0,0,.12); --pop-shadow:0 8px 24px rgba(0,0,0,.14),0 2px 6px rgba(0,0,0,.08);
+
+  /* Radii, spacing (one 4 pt scale) */
+  --r-card:14px; --r-ctl:8px; --r-tile:8px; --r-pill:6px; --r-tip:8px; --r-field:7px;
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px;
+
+  /* Type: macOS fonts only. SF Pro for words, SF Mono for numbers, times and units. */
+  --font-sans:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  --font-mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;
+  --t-title:500 15px/20px var(--font-sans);
+  --t-body:400 13px/18px var(--font-sans);
+  --t-label:400 12px/16px var(--font-sans);
+  --t-caption:400 11px/14px var(--font-sans);
+  --t-mono:400 13px/18px var(--font-mono);
+  --t-mono-lg:400 18px/22px var(--font-mono);
+  --t-mono-sm:400 10.5px/14px var(--font-mono);
+  --t-hero:500 30px/34px var(--font-sans);
+
+  /* Motion */
+  --press:150ms; --t-ui:200ms; --ease-out:cubic-bezier(.23,1,.32,1);
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --frame:#0B0B0B; --surface:#131314; --surface-2:#19191A; --surface-3:#262627;
+    --rim:#1D1D1E; --edge:rgba(255,255,255,.10); --hairline:rgba(255,255,255,.035); --hairline-strong:rgba(255,255,255,.22);
+    --text:#F2F2F3; --text-2:#9B9BA1; --text-3:#6E6E74; /* B-Y2: 3:1 for the empty status ring on --surface (3.67) and no-data days on --tip-bg (3.09) */
+    --accent:#7DA4F8;
+    --primary:#F2F2F3; --on-primary:#0C0C0D; /* dark: white fill, black text */
+    --d-purple:#A78BFA; --d-blue:#7DA4F8; --d-steel:#9DB4CF; --d-yellow:#EFCB6B; --d-mint:#7FDDB0; --d-pink:#EB86C0;
+    --alert:#F2667E; --warn-text:#EFCB6B;
+    --tint-mint:rgba(127,221,176,.12); --tint-alert:rgba(242,102,126,.13); --tint-blue:rgba(125,164,248,.13);
+    --kw-fill:rgba(239,203,107,.12);
+    --focus:#7DA4F8; --link:#7DA4F8; --switch-on:#7FDDB0;
+    --fill-hover:rgba(255,255,255,.06); --fill-press:rgba(255,255,255,.11); --track:rgba(255,255,255,.08);
+    --tip-bg:#232326; --tip-edge:rgba(255,255,255,.12); --pop-shadow:0 10px 30px rgba(0,0,0,.55),0 2px 6px rgba(0,0,0,.4);
+  }
+}
+/* Numbers, times and units inside a sentence: the mono face, sized to sit on the sans line. */
+.num{font-family:var(--font-mono);font-size:.94em;letter-spacing:0;font-variant-numeric:tabular-nums;line-height:1} /* SF Mono's taller box would grow its line by 1 pt */
+/* Settings › Reduce motion (B-Y4): every press scale, transition and animation stops, as with macOS's own;
+   busy marks keep their reduced-motion look (panel Refresh pulses, spinners dim). JS motion checks the setting itself. */
+html.reduce-motion *,html.reduce-motion *::before,html.reduce-motion *::after{transition:none!important;animation:none!important;scale:none!important}
+html.reduce-motion .gw-icon-btn.is-busy .gw-ic{animation:gw-pulse 1.2s ease-in-out infinite alternate!important}
+html.reduce-motion .spin{opacity:.6}

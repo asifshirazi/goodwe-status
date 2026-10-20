@@ -4,6 +4,18 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ## [Unreleased]
 
+### Added
+- Settings › General: a Reduce motion switch. It turns off the opening motion, the pane fade and the window glide.
+- Settings › Automation: a Refresh device list button beside Add Device…, and a status dot before each device.
+
+### Changed
+- The panel, Settings and the sign-in box have a new look: a new colour palette in light and dark, and the panel is a solid card with rounded corners.
+- In light mode, switches, buttons and focus rings follow your Mac's accent colour. If the colour is too pale to read, the app keeps its blue.
+- The battery shows 20 small cells coloured by how full it is, and both temperatures sit on one line.
+- When the grid is on and there is no back-on estimate, the panel says "Since 10:05 AM" under Grid on. The cut line is shorter: "Cut usually around 9:10 AM".
+- The chart, battery and cut bars slide in when the panel opens.
+- Settings panes are a switch at the top, and the window glides to each pane's height. The log folder moved to About.
+
 ## [0.2.0] - 2026-10-20
 
 ### Added

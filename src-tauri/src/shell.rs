@@ -60,6 +60,7 @@ pub fn setup(app: &mut App, log_dir: PathBuf) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+    crate::accent::watch(app.handle());
     refresh(app.handle());
     Ok(())
 }
@@ -74,11 +75,14 @@ fn toggle(app: &AppHandle, rect: Rect) {
         return;
     }
     place(app, &win, rect);
+    crate::accent::apply(app);
     #[cfg(target_os = "macos")]
     let _ = app.show(); // undo an earlier `app.hide()`, or the window can't come forward
     let _ = win.show();
     let _ = win.set_focus();
     refresh(app);
+    // T-029: after the state, so the opening motion plays on the fresh render (never on polls or refreshes).
+    let _ = app.emit_to(PANEL, "panel-opened", ());
     check_notifications(app);
 }
 

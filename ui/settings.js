@@ -4,9 +4,15 @@
 (function (root) {
   'use strict';
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  // T-029: numbers, times and units inside a sentence in SF Mono (.num, tokens.css); the panel's rule, except a number
+  // never ends on a dot or comma ("You have 0.1.2." keeps its full stop in the sentence's face). Escapes first.
+  const num = s => esc(s).replace(/~?\d(?:[\d:.,]*\d)?(?:[\u00a0 ]?(?:AM|PM|kW|°C|min|W|h|m|s|%)(?![A-Za-z]))?/g, m => `<span class="num">${m}</span>`);
   const DC = ['Central Europe', 'Western Europe', 'Western America', 'Eastern America', 'China', 'India'];
   const S = 'fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"';
-  const MINUS = `<svg viewBox="0 0 14 14" ${S}><circle cx="7" cy="7" r="5.8"/><path d="M4.4 7h5.2"/></svg>`;
+  // T-029 (owner): Remove is the danger colour with a filled glyph (SF Symbols' minus.circle.fill: the bar in the well colour, cut out of a red disc).
+  const MINUS = '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="6.3" fill="currentColor"/><path class="bar" d="M4.3 7h5.4" stroke-width="1.5" stroke-linecap="round"/></svg>';
+  // T-029: the panel's Refresh glyph (16 grid, 1.4 stroke) for Refresh device list.
+  const REFRESH = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13 8a5 5 0 1 1-1.5-3.6"/><path d="M12 1.8v2.9H9.1"/></svg>';
   // Toolbar glyphs, 22 pt, same stroke family as the panel's icons (gear = the panel's Settings icon).
   const GEAR = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"><path d="M14.22 7.00L14.22 9.00L12.77 9.13L12.17 10.57L13.11 11.69L11.69 13.11L10.57 12.17L9.13 12.77L9.00 14.22L7.00 14.22L6.87 12.77L5.43 12.17L4.31 13.11L2.89 11.69L3.83 10.57L3.23 9.13L1.78 9.00L1.78 7.00L3.23 6.87L3.83 5.43L2.89 4.31L4.31 2.89L5.43 3.83L6.87 3.23L7.00 1.78L9.00 1.78L9.13 3.23L10.57 3.83L11.69 2.89L13.11 4.31L12.17 5.43L12.77 6.87Z"/><circle cx="8" cy="8" r="2.1"/></svg>';
   const BOLT = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"><path d="M9.2 1.6L3.6 9.1h4.1l-1 5.3 5.7-7.6H8.3z"/></svg>';
@@ -24,7 +30,9 @@
   // Delay pop-up (seconds → label). One value per device, used both ways; 0 = at once.
   const DELAYS = [[0, 'Instant'], [30, '30 s'], [60, '1 min'], [120, '2 min'], [300, '5 min'], [600, '10 min'], [900, '15 min'], [1800, '30 min']];
   const sw = (k, on, label, off) => `<button type="button" class="switch" role="switch" data-k="${k}" data-action="${k}" aria-checked="${on}" aria-label="${esc(label)}"${off ? ' aria-disabled="true"' : ''}><i></i></button>`;
-  const btn = (action, text, def) => `<button type="button" class="btn${def ? ' def' : ''}" data-k="${action}" data-action="${action}">${text}</button>`;
+  // T-029 (owner): the buttons that end a connection (Sign Out, Disconnect) use the danger variant.
+  const DANGER = ['signout', 'disconnect'];
+  const btn = (action, text, def) => `<button type="button" class="btn${def ? ' def' : ''}${DANGER.includes(action) ? ' is-danger' : ''}" data-k="${action}" data-action="${action}">${text}</button>`;
 
   // ---- General pane ----
   // Signed out or login failed: Sign In… is a normal button here (one default button per window at most, D-Y4).
@@ -43,13 +51,15 @@
     // T-020: today's cut strip in the panel (on by default). No battery = no cut history, so it is dimmed and says why.
     const noBat = g.hasBattery === false;
     const cuts = `<div class="row"><div class="lbl"><span>Show today’s power cuts</span><small>${noBat ? 'Power cuts are worked out from the battery’s readings, and this station has no battery.' : 'Show a 24-hour strip of today’s cuts under Grid in the panel.'}</small></div>${sw('cuts', !!g.showCuts && !noBat, 'Show today’s power cuts', noBat)}</div>`;
-    return `<h2>Menu Bar</h2><section class="grp"><div class="row"><div class="lbl"><span>Show temperatures</span><small>${help}</small></div>${sw('temps', g.showTemps && g.temps !== 'none', 'Show temperatures', g.temps === 'none')}</div>${cuts}</section>`;
+    // T-029 (owner): the panel's opening motion and the pane switch can be turned off here; off by default (the motion plays).
+    const motion = `<div class="row"><div class="lbl"><span>Reduce motion</span><small>Open the panel and switch panes here without animation. macOS’s own Reduce motion (Accessibility › Display) does the same.</small></div>${sw('motion', !!g.reduceMotion, 'Reduce motion')}</div>`;
+    return `<h2>Menu Bar</h2><section class="grp"><div class="row"><div class="lbl"><span>Show temperatures</span><small>${help}</small></div>${sw('temps', g.showTemps && g.temps !== 'none', 'Show temperatures', g.temps === 'none')}</div>${cuts}${motion}</section>`;
   };
   // T-008: one alert at the setting and one at half of it (Rust: rules::low_battery, integer half), only while the grid is off.
   const LOW = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50];
   const notifications = g => {
     const p = g.lowBattery || 20, opts = LOW.includes(p) ? LOW : [...LOW, p].sort((a, b) => a - b);
-    return `<h2>Notifications</h2><section class="grp"><div class="row"><div class="lbl"><label for="low">Low battery alert</label><small>While the grid is off, notify at ${p}% and again at ${Math.floor(p / 2)}%.</small></div>`
+    return `<h2>Notifications</h2><section class="grp"><div class="row"><div class="lbl"><label for="low">Low battery alert</label><small>While the grid is off, notify at <span class="num">${p}%</span> and again at <span class="num">${Math.floor(p / 2)}%</span>.</small></div>`
       + `<select id="low" data-k="low">${opts.map(v => `<option value="${v}"${v === p ? ' selected' : ''}>${v}%</option>`).join('')}</select></div></section>`;
   };
   const troubleshooting = () => `<h2>Troubleshooting</h2><section class="grp"><div class="row"><div class="lbl"><span>Log folder</span><small>The app’s logs, for reporting a problem.</small></div>${btn('logs', 'Open Log Folder')}</div></section>`;
@@ -94,7 +104,7 @@
     const prog = u.kind === 'downloading' && u.pct != null
       ? `<div class="ab-prog"><span class="bar" role="progressbar" aria-label="Download" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${u.pct}"><i style="width:${u.pct}%"></i></span><small>${esc(u.progress || '')}</small></div>` : '';
     const row1 = `<div class="row" role="status"><div class="lbl"><span class="ab-state${warn ? ' is-warn' : ''}">${top[0]}</span>`
-      + (top[1] ? `<small${u.kind === 'failed' ? ' class="err"' : ''}>${esc(top[1])}</small>` : '') + prog + `</div>${top[2]}</div>`;
+      + (top[1] ? `<small${u.kind === 'failed' ? ' class="err"' : ''}>${num(top[1])}</small>` : '') + prog + `</div>${top[2]}</div>`;
     // What's new: from the release's notes, while there is a newer version to talk about.
     const notes = u.notes && u.notes.length && PENDING.includes(u.kind)
       ? `<div class="row ab-notes"><div class="lbl"><span>What’s new in ${esc(u.version)}</span><ul>${u.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>`
@@ -104,7 +114,7 @@
       : 'GoodWe Status looks for a new release on GitHub each time it opens.';
     const links = `<h2>Project</h2><section class="grp"><div class="row">${GITHUB}<div class="lbl"><span>Source code</span><small>github.com/asifshirazi/goodwe-status</small></div>${btn('github', 'Open on GitHub')}</div></section>`;
     return hero + `<h2>Updates</h2><section class="grp">${row1}${notes}</section><p class="ab-foot">${foot}</p>` + links
-      + '<p class="ab-lic">MIT License · © 2026 Asif Shirazi</p>';
+      + troubleshooting() + '<p class="ab-lic">MIT License · © 2026 Asif Shirazi</p>'; // T-029 (owner): Log folder lives in About now
   }
 
   // ---- Automation pane ----
@@ -112,17 +122,21 @@
   const automation = a => `<p class="intro">${esc(a.hint || 'Devices that are on change when the grid goes off or comes back, each after its own delay.')}</p>`;
   function devices(s) {
     const rows = s.devices.map((d, i) => {
-      // Status line, first match: in flight (spinner) · waiting out its delay · offline · last result.
-      const status = d.setting ? `<small role="status"><span class="spin" aria-hidden="true"></span>${esc(d.setting)}</small>`
-        : d.waiting ? `<small role="status">${esc(d.waiting)}</small>`
-        : d.offline ? `<small class="err">Offline in Tuya</small>` : d.last ? `<small${d.last.failed ? ' class="err"' : ''}>${esc(d.last.text)}</small>` : '';
+      // T-029 (owner): the status is a dot before the name, its words in the tooltip (title, drawn by macOS) and for
+      // VoiceOver (aria-label, plus a hidden live line). First match: spinner = being set · yellow = waiting out its delay ·
+      // red = offline or the last change failed · green = the last change worked · empty ring = nothing has happened yet.
+      const [kind, text] = d.setting ? ['busy', d.setting] : d.waiting ? ['wait', d.waiting] : d.offline ? ['bad', 'Offline in Tuya']
+        : d.last ? [d.last.failed ? 'bad' : 'ok', d.last.text] : ['none', ''];
+      const dot = kind === 'none' ? '<i class="st-dot is-none" aria-hidden="true"></i>'
+        : `<i class="st-dot is-${kind}" role="img" aria-label="${esc(text)}" title="${esc(text)}">${kind === 'busy' ? '<span class="spin" aria-hidden="true"></span>' : ''}</i>`;
+      const status = text ? `<span class="vh" role="status">${esc(text)}</span>` : '';
       const sel = (which, label, pos) => `<select data-k="${which}-${i}" data-device="${i}" data-which="${which}" aria-label="${label}, ${esc(d.name)}">${d.choices.map((c, k) => `<option value="${k}"${k === pos ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select>`;
       // D-Y13: a saved delay that isn't in the list (an edited file) gets its own item, in order, so the pop-up never shows a value that isn't saved.
       const ds = d.delay_s || 0, dl = DELAYS.some(([v]) => v === ds) ? DELAYS
         : [...DELAYS, [ds, ds < 60 || ds % 60 ? ds + ' s' : ds / 60 + ' min']].sort((a, b) => a[0] - b[0]);
       const delay = `<select data-k="delay-${i}" data-device="${i}" data-delay aria-label="Delay, ${esc(d.name)}">${dl.map(([v, t]) => `<option value="${v}"${v === ds ? ' selected' : ''}>${t}</option>`).join('')}</select>`;
       const ctl = d.loading ? `<span class="wait" role="status"><span class="spin" aria-hidden="true"></span>Loading what it can do…</span>` : sel('off', 'Grid off', d.off) + sel('on', 'Grid on', d.on) + delay;
-      return `<div class="row lt${d.enabled || d.loading ? '' : ' off'}"><span class="nm"><b title="${esc(d.name)}">${esc(d.name)}</b></span>${ctl}`
+      return `<div class="row lt${d.enabled || d.loading ? '' : ' off'}"><span class="nm">${d.loading ? '' : dot}<b title="${esc(d.name)}">${esc(d.name)}</b></span>${ctl}`
         + `<button type="button" class="rm" data-k="rm-${i}" data-action="remove" data-device="${i}" aria-label="Remove ${esc(d.name)}" title="Remove"${d.loading ? ' hidden' : ''}>${MINUS}</button>`
         + (d.loading ? '' : `<button type="button" class="switch" role="switch" data-k="en-${i}" data-action="enable" data-device="${i}" aria-checked="${!!d.enabled}" aria-label="Change ${esc(d.name)} with the grid"${s.automation.disabled ? ' aria-disabled="true"' : ''}><i></i></button>`)
         + `${status}</div>`;
@@ -133,8 +147,14 @@
       : `<select data-k="add" id="add" class="is-placeholder" aria-label="Add a device"><option selected disabled>Add Device…</option>${(s.add || []).map(d => `<option>${esc(d.name)}${d.offline ? ' (offline)' : ''}</option>`).join('')}</select>`;
     const head = s.devices.length ? `<div class="row hd"><span>Device</span><span>Grid off</span><span>Grid on</span><span>Delay</span><span></span><span></span></div>` + rows
       : `<div class="row"><p>No devices yet. Add the Tuya devices you want to change.</p></div>`;
-    return `<h2>Devices</h2><section class="grp devices">${head}<div class="row">${add}${s.addErr ? `<span class="err" role="alert">${esc(s.addErr)}</span>` : ''}</div></section>`
-      + (s.devices.length ? `<p class="foot">Delay: how long a device waits after the grid changes, both ways. If the grid changes back first, the waiting change is dropped.</p>` : '');
+    // T-029 (owner): Refresh (icon only) and Add Device… sit on the Devices heading's line, top right; a load error keeps
+    // its own line under the list.
+    const busy = s.add === 'loading';
+    const refresh = `<button type="button" class="icon-btn${busy ? ' is-busy' : ''}" data-k="refresh-devices" data-action="refresh-devices" aria-label="Refresh device list" title="Refresh device list"${busy ? ' aria-disabled="true" aria-busy="true"' : ''}>${REFRESH}</button>`;
+    return `<div class="h2row"><h2 id="devices-h">Devices</h2><div class="acts" role="group" aria-labelledby="devices-h">${refresh}${add}</div></div><section class="grp devices">${head}`
+      + (s.addErr ? `<div class="row"><span class="err" role="alert">${esc(s.addErr)}</span></div>` : '') + `</section>`
+      // T-029 (owner): the Delay note sits under a hairline, with an info glyph on its left.
+      + (s.devices.length ? `<p class="foot has-info">${INFO.replace('<svg', '<svg aria-hidden="true"')}<span>Delay: how long a device waits after the grid changes, both ways. If the grid changes back first, the waiting change is dropped.</span></p>` : '');
   }
   function tuya(t) {
     if (t.connected) return `<h2>Tuya</h2><section class="grp"><div class="row"><div class="lbl"><span>Connected to your Tuya cloud project</span>`
@@ -154,7 +174,7 @@
   // ---- Stats pane (T-015) ----
   // Rust sends every string formatted (spec › Stats state). The pane keeps one height on every day: the table box is
   // 5½ rows tall and scrolls inside, the footer keeps two lines, so ← / → never resize the window.
-  const DAYW = 494; // strip width: window 560 − body 40 − group border 2 − row padding 24
+  const DAYW = 476; // T-029 strip width: window 560 − well margins 16 − well padding 36 − Stats panel padding 32
   function strip(st) {
     // With a part to read, the strip is one focusable read-out (as the panel chart): ← → move from part to part (T-025).
     const svg = GWStrip.svg(st.strip, DAYW), n = svg.includes('class="hit"');
@@ -198,7 +218,7 @@
     const table = `<div class="st-table" role="table" aria-label="Power cuts, ${esc(st.date)}">`
       + (rows.length ? `<div class="st-tr st-th" role="row"><span role="columnheader">Grid off</span><span role="columnheader">Grid on</span><span role="columnheader">Duration</span></div>` : '')
       + box + `</div>`;
-    const sum = `<div class="st-sum"><p>${esc(st.summary)}</p>${strip(st)}</div>`;
+    const sum = `<div class="st-sum"><p>${num(st.summary)}</p>${strip(st)}</div>`;
     // Footer: the note (where the numbers come from, or why this day is special), then one status line.
     const b = st.backfill, pr = st.problem;
     const status = pr ? `<p class="st-line is-warn" role="status">${WARN}<span>${esc(pr.text)}</span>${pr.action ? btn(pr.action[0], pr.action[1]) : ''}</p>`
@@ -212,13 +232,14 @@
     // D-Y8: roving tabindex (only the selected tab is in the Tab order); ← → select and show the next pane at once.
     const tabs = PANES.map(([id, label, icon]) => `<button type="button" role="tab" class="tab" data-k="tab-${id}" data-action="pane" data-pane="${id}" aria-selected="${id === pane}" tabindex="${id === pane ? 0 : -1}" id="tab-${id}" aria-controls="pane"${id === 'about' && pending(s.about) ? ' aria-description="Update available"' : ''}>${icon}<span>${label}</span>${id === 'about' && pending(s.about) ? '<i class="dot" aria-hidden="true"></i>' : ''}</button>`).join('');
     const body = pane === 'general'
-      ? startup(s.general) + menuBar(s.general) + notifications(s.general) + troubleshooting() + account(s.account)
+      ? startup(s.general) + menuBar(s.general) + notifications(s.general) + account(s.account) // T-029 (owner): Troubleshooting moved to About
       : pane === 'stats' ? stats(s.stats)
       : pane === 'about' ? about(s.about, now)
       : automation(s.automation) + (s.tuya.connected || s.devices.length ? devices(s) : '') + tuya(s.tuya);
-    // D-O11: the title strip is empty (the native title bar draws the traffic lights and the title). D-O10: the strip and
-    // the toolbar's gaps drag the window (data-drag, see below); the tab buttons don't carry it, so they stay clickable.
-    return `<div class="win" role="dialog" aria-label="${title}"><div class="chrome"><div class="titlebar" data-drag></div>`
+    // D-O11: the title strip is empty (the native title bar draws the traffic lights and the title). D-O10: the strip, the
+    // toolbar's gaps and (T-029) the row round the segmented control drag the window (data-drag, see below); the tab buttons
+    // don't carry it, so they stay clickable.
+    return `<div class="win" role="dialog" aria-label="${title}"><div class="chrome" data-drag><div class="titlebar" data-drag></div>`
       + `<div class="toolbar" role="tablist" aria-label="Settings" data-drag>${tabs}</div></div><div class="body" id="pane" role="tabpanel" aria-labelledby="tab-${pane}">${body}</div></div>`;
   }
   // ---- Strip read-out (T-015, owner): point at a cut (or its table row), or Tab to the strip and use ← →. The tooltip is the
@@ -249,7 +270,8 @@
   let state = null, last = '', height = 0, hold = 0, queued = null, focusTo = null;
   const DAY0 = '\u0000day'; // T-015: focus the calendar's roving day (calendar.focus, else the selected day) after the render
 
-  const natural = () => { const c = el.querySelector('.chrome'), b = el.querySelector('.body'); return c && b ? c.offsetHeight + b.scrollHeight : 0; };
+  // T-029: + the well's bottom margin (the frame under it), or the window would cut it and the pane would scroll by 8 pt.
+  const natural = () => { const c = el.querySelector('.chrome'), b = el.querySelector('.body'); return c && b ? c.offsetHeight + b.scrollHeight + parseFloat(getComputedStyle(b).marginBottom) : 0; };
   function render(s, open) {
     const json = JSON.stringify(s);
     if (!open && json === last) return;
@@ -262,6 +284,7 @@
     // Typed values survive a re-render (a grid change while the user types the Secret); a fresh open starts from the state.
     const typed = !open && el.querySelector('#aid') ? ['aid', 'sec', 'dc'].map(id => [id, el.querySelector('#' + id).value]) : null;
     const body = el.querySelector('.body'), scroll = body && was && was.pane === s.pane ? body.scrollTop : 0;
+    document.documentElement.classList.toggle('reduce-motion', !!(s.general && s.general.reduceMotion)); // B-Y4: tokens.css stills
     el.innerHTML = renderSettings(s);
     if (typed && el.querySelector('#aid')) {
       typed.forEach(([id, v]) => { if (v) el.querySelector('#' + id).value = v; });
@@ -275,6 +298,9 @@
       if (caret && t && t.dataset.k === key && t.tagName === 'INPUT') t.setSelectionRange(caret[0], caret[1]);
     }
     if (s.pane === 'stats') bindStrip(el, s.stats);
+    // T-029: a new pane fades in (160 ms) while Rust eases the window's height; not on a redraw of the same pane, and not with Reduce motion.
+    if (!open && was && was.pane !== s.pane && !(s.general && s.general.reduceMotion) && matchMedia('(prefers-reduced-motion: no-preference)').matches)
+      el.querySelector('.body').animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: 'cubic-bezier(.23,1,.32,1)' });
     const h = natural();
     if (open || h !== height) { height = h; invoke('settings_show', { h, show: !!open }); }
   }
@@ -309,7 +335,7 @@
     if (id === 'day' || id === 'cal-month') return act({ id: id.replace('-', '_'), step: +b.dataset.step });
     if (id === 'cal-day') { focusTo = 'calendar'; return act({ id: 'cal_day', day: +b.dataset.day }); }
     if (id === 'calendar') focusTo = state.stats.calendar ? 'calendar' : DAY0; // closing: back to the button; opening: the selected day
-    if (id === 'enable' || id === 'login' || id === 'temps' || id === 'cuts') {
+    if (id === 'enable' || id === 'login' || id === 'temps' || id === 'cuts' || id === 'motion') {
       const on = b.getAttribute('aria-checked') !== 'true';
       b.setAttribute('aria-checked', String(on)); // the knob slides now; the state confirms it
       clearTimeout(hold);

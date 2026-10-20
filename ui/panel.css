@@ -1,197 +1,202 @@
-/* GoodWe Status panel: the Tauri web-view window under the tray icon.
-   Real app: the window is transparent with the macOS "popover"/"menu" window effect (vibrancy),
-   so set --gw-panel-bg to transparent there; the mock paints a translucent fill instead.
-   Tokens follow the system appearance. The window's own shadow and material frame the panel, so no CSS shadow here. */
+@import url("tokens.css");
+/* GoodWe Status panel, v2 language (T-029): the Tauri web-view window under the tray icon is the card: --frame with a
+   3 pt rim, a 14 pt radius, the header and footer on the frame, everything else in an inset well, sections split by
+   full-width hairlines. Words in SF Pro, numbers in SF Mono. Every value is a token from tokens.css; the --gw-* names
+   below only map them for panel.js, which writes some of them inline. The window is opaque (no vibrancy), its corners
+   transparent (index.html), with the window's own shadow. */
 
 .gw-panel{
-  --gw-label:rgba(0,0,0,.85); --gw-label-2:rgba(0,0,0,.60); --gw-label-3:rgba(0,0,0,.30);
-  --gw-separator:rgba(0,0,0,.10); --gw-panel-bg:rgba(238,238,240,.86); --gw-panel-edge:rgba(0,0,0,.14);
-  --gw-highlight:#0063E1; --gw-badge:#0063E1; /* T-022 */ --gw-on-highlight:#FFFFFF; --gw-red:#D70015; /* T-015 D-O10: 3.4:1 or more over any desktop (#FF3B30 was 2.2:1) */ --gw-green:#248A3D; /* T-006: systemGreen, accessible (3.8:1 on the panel; #34C759 is 1.9:1) */
-  --gw-soc:#0062CC; --gw-kw:#A84A00; --gw-kw-fill:rgba(168,74,0,.14); --gw-plot-text:rgba(0,0,0,.60);
-  --gw-s1:4px; --gw-s2:8px; --gw-s3:12px; --gw-radius:12px; --gw-row-radius:6px;
-  /* T-002 */
-  --gw-fill-hover:rgba(0,0,0,.07); --gw-fill-press:rgba(0,0,0,.13);
-  --gw-tip-bg:rgba(255,255,255,.97); --gw-tip-edge:rgba(0,0,0,.10); --gw-cursor:rgba(0,0,0,.45); --gw-dot-ring:#FFFFFF;
-  --gw-tip-shadow:0 4px 12px rgba(0,0,0,.18),0 1px 3px rgba(0,0,0,.12); --gw-focus:#0063E1;
-  --gw-spin:800ms; --gw-press:150ms;
-}
-@media (prefers-color-scheme: dark){
-  .gw-panel{
-    --gw-label:rgba(255,255,255,.88); --gw-label-2:rgba(255,255,255,.60); --gw-label-3:rgba(255,255,255,.30);
-    --gw-separator:rgba(255,255,255,.12); --gw-panel-bg:rgba(44,44,46,.86); --gw-panel-edge:rgba(255,255,255,.16);
-    --gw-green:#30D158; /* T-006: systemGreen dark, 6.9:1 */
-    --gw-red:#FF6961; /* T-015 D-O10: 3.2:1 or more over any desktop */
-    --gw-soc:#409CFF; --gw-kw:#FF9F0A; --gw-kw-fill:rgba(255,159,10,.16); --gw-plot-text:rgba(255,255,255,.60);
-    /* T-002 */
-    --gw-fill-hover:rgba(255,255,255,.10); --gw-fill-press:rgba(255,255,255,.18);
-    --gw-tip-bg:rgba(58,58,60,.97); --gw-tip-edge:rgba(255,255,255,.14); --gw-cursor:rgba(255,255,255,.50); --gw-dot-ring:#2C2C2E;
-    --gw-tip-shadow:0 4px 12px rgba(0,0,0,.45),0 1px 3px rgba(0,0,0,.35); --gw-focus:#409CFF; --gw-badge:#409CFF; /* T-022 */
-  }
-}
-
-.gw-panel{
-  width:340px; box-sizing:border-box; padding:6px; border-radius:var(--gw-radius);
-  background:var(--gw-panel-bg); color:var(--gw-label);
-  font:13px/1.35 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
-  -webkit-font-smoothing:antialiased; font-variant-numeric:tabular-nums; cursor:default; user-select:none;
+  --gw-label:var(--text); --gw-label-2:var(--text-2); --gw-label-3:var(--text-3); --gw-separator:var(--hairline);
+  --gw-panel-bg:var(--surface); --gw-panel-edge:var(--rim);
+  --gw-red:var(--grid-off); --gw-green:var(--grid-on); --gw-soc:var(--soc); --gw-kw:var(--kw); --gw-kw-fill:var(--kw-fill);
+  --gw-plot-text:var(--text-2); --gw-badge:var(--badge); --gw-focus:var(--focus);
+  --gw-fill-hover:var(--fill-hover); --gw-fill-press:var(--fill-press); --gw-track:var(--track);
+  --gw-tip-bg:var(--tip-bg); --gw-tip-edge:var(--tip-edge); --gw-cursor:var(--text-2); --gw-dot-ring:var(--surface);
+  --gw-pad:14px;
+  width:340px; box-sizing:border-box; border-radius:var(--r-card); overflow:visible; padding-bottom:0;
+  background:var(--frame); color:var(--text); border:3px solid var(--rim); /* the references' outer ring, inside the 340 pt */
+  font:var(--t-body); -webkit-font-smoothing:antialiased; font-variant-numeric:tabular-nums; cursor:default; user-select:none;
 }
 .gw-panel *{box-sizing:border-box}
-.gw-panel p{margin:0}
+.gw-panel p,.gw-panel h1{margin:0}
+.gw-panel .num{font-size:.94em}
 
-/* Sections, hairline between them (inset like menu separators) */
-.gw-sec{padding:10px var(--gw-s3);position:relative}
-.gw-sec + .gw-sec::before, .gw-actions::before{content:"";position:absolute;top:0;left:var(--gw-s3);right:var(--gw-s3);height:1px;background:var(--gw-separator)}
-.gw-row{display:flex;align-items:center;gap:var(--gw-s2);min-height:20px}
-.gw-ic{width:16px;height:16px;flex:none;color:var(--gw-label-2);display:block}
-.gw-ic.is-red{color:var(--gw-red)}
-.gw-ic.is-green{color:var(--gw-green)}
-.gw-ic.is-strong{color:var(--gw-label)}
-.gw-title{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.gw-val{font-weight:600}
-.gw-sub{font-size:12px;color:var(--gw-label-2);margin-top:2px !important;padding-left:24px}
-.gw-hero{margin-top:var(--gw-s2) !important;padding-left:24px;font-size:13px;color:var(--gw-label-2)}
-.gw-hero b{font-size:22px;line-height:26px;font-weight:600;color:var(--gw-label);letter-spacing:-.2px;margin-right:4px}
+/* ---- Card header: icon tile · title + subtitle · Refresh ---- */
+.gw-head{display:flex;align-items:flex-start;gap:var(--s3);padding:11px 13px 9px}
+/* The inset well: everything between the header and the footer */
+.gw-well{margin:0 3px;border-radius:10px;background:var(--surface);position:relative} /* no border: the fill raises it (references) */
+.gw-well > :first-child{border-top:0}
+.gw-tile{flex:none;display:grid;place-items:center;width:32px;height:32px;border-radius:var(--r-tile);
+  background:var(--surface);box-shadow:inset 0 0 0 1px var(--edge);color:var(--text-2)}
+.gw-tile .gw-ic{width:16px;height:16px}
+.gw-tile.is-on{background:var(--tint-mint)} .gw-tile.is-on .gw-ic{color:var(--grid-on)}
+.gw-tile.is-off{background:var(--tint-alert)} .gw-tile.is-off .gw-ic{color:var(--grid-off)}
+.gw-head-tx{flex:1;min-width:0;padding-top:1px}
+.gw-title{display:block;font:var(--t-title);color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gw-sub{font:var(--t-label);color:var(--text-2);margin-top:1px !important}
 
-/* Chart */
-.gw-chart-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--gw-s2);margin-bottom:var(--gw-s1)}
-.gw-chart-head .gw-title{flex:none}
-.gw-legend{display:flex;gap:10px;font-size:11px;color:var(--gw-label-2)}
-.gw-legend span{display:inline-flex;align-items:center;gap:4px}
-.gw-legend i{display:inline-block;width:12px;height:2px;border-radius:1px}
+/* ---- Sections: full-width hairline above each ---- */
+.gw-sec{position:relative;padding:14px var(--gw-pad);border-top:1px solid var(--hairline)}
+
+/* Battery hero (owner, second references): the % large, a muted line under it, a thick bar, the time left */
+.gw-hero b{display:block;font:var(--t-hero);letter-spacing:-.6px;color:var(--text);font-variant-numeric:tabular-nums}
+.gw-hero p{font:var(--t-label);color:var(--text-2);margin-top:2px !important}
+.gw-hero .num{color:var(--text)}
+/* The charge as 20 cells of 5 % (owner): filled cells in the battery colour, the rest as the track */
+.gw-cells{display:grid;grid-template-columns:repeat(20,1fr);gap:3px;height:16px;margin-top:12px}
+.gw-cells i{border-radius:3px;background:var(--track)}
+.gw-cells i.on{background:var(--soc)}
+.gw-cells.is-low i.on{background:var(--alert)} .gw-cells.is-mid i.on{background:var(--d-yellow)} .gw-cells.is-full i.on{background:var(--d-mint)}
+.gw-left{margin-top:8px !important;font:var(--t-label);color:var(--text-2)}
+.gw-left b{font:var(--t-mono);font-weight:500;color:var(--text)}
+.gw-left .num{color:var(--text-2)}
+.gw-label{font:var(--t-label);color:var(--text-2)}
+.gw-row{display:flex;align-items:center;gap:var(--s2);min-height:20px}
+.gw-ic{width:16px;height:16px;flex:none;color:var(--text-2);display:block}
+.gw-ic.is-red{color:var(--grid-off)} .gw-ic.is-green{color:var(--grid-on)} .gw-ic.is-strong{color:var(--text)}
+
+/* Outlook: the back-on / next-cut lines, then today's strip */
+.gw-line{font:var(--t-label);color:var(--text-2)}
+.gw-line + .gw-line{margin-top:2px !important}
+.gw-line .num{color:var(--text)}
+
+/* ---- Temperatures (T-015): two readings side by side on one line, split by a hairline (owner, T-029) ----
+   name · word · mono value · trend, a 4 pt heat bar under them */
+.gw-panel{--gw-warm:var(--warn-text);--gw-hot:var(--alert);--gw-bar-warm:var(--d-yellow);--gw-bar-hot:var(--alert)}
+.gw-temps{display:grid;grid-template-columns:1fr 1fr;padding-top:12px;padding-bottom:13px}
+.gw-tbox{display:flex;flex-direction:column;gap:6px;min-width:0;padding-right:14px}
+.gw-tbox + .gw-tbox,.gw-temps > span + .gw-tbox{padding:0 0 0 14px;border-left:1px solid var(--hairline)}
+.gw-tbox-top{display:flex;align-items:baseline;gap:6px;white-space:nowrap;font:var(--t-label);color:var(--text-2)}
+.gw-tbox-top > span:first-child{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.gw-tbox-top b{font:var(--t-mono);font-weight:400;color:var(--text)}
+.gw-tbox-bar{display:flex;align-items:center;gap:8px;height:14px}
+.gw-tbox-bar .gw-meter{flex:1}
+.gw-tbox-bar em{font-style:normal;font:var(--t-label);font-weight:500;line-height:14px}
+.gw-trend{display:inline-flex;align-self:center;color:var(--text-2)} .gw-trend svg{width:10px;height:10px}
+.gw-tbox.is-warm b,.gw-tbox.is-warm em{color:var(--gw-warm)}
+.gw-tbox.is-hot b,.gw-tbox.is-hot em{color:var(--gw-hot)}
+.gw-tbox.is-cold em{color:var(--text)}
+.gw-tbox.is-cold .gw-meter i{background-image:none;background-color:var(--text-3)}
+.gw-meter{display:block;height:4px;border-radius:2px;background:var(--track);overflow:hidden}
+.gw-meter i{display:block;height:100%;border-radius:2px;background-repeat:no-repeat}
+.gw-meter.is-inverter i{background-image:linear-gradient(90deg,var(--grid-on) 0 55%,var(--gw-bar-warm) 75%,var(--gw-bar-hot) 87.5% 100%)}
+.gw-meter.is-battery i{background-image:linear-gradient(90deg,var(--grid-on) 0 48%,var(--gw-bar-warm) 66.7%,var(--gw-bar-hot) 83.3% 100%)}
+@media (forced-colors:active){ .gw-meter{border:1px solid CanvasText} .gw-meter i{background:CanvasText} }
+
+/* Notifications are off: tile + two lines */
+.gw-notif{display:flex;align-items:center;gap:var(--s3)}
+.gw-notif .gw-tile{width:28px;height:28px}
+.gw-notif-t{font:var(--t-body);font-weight:500}
+
+/* ---- Chart (T-002): section label left, legend right; fine lines, dotted guides, mono axes ---- */
+.gw-chart-head{display:flex;align-items:center;justify-content:space-between;gap:var(--s2);margin-bottom:var(--s2)}
+.gw-legend{display:flex;gap:var(--s3);font:var(--t-label);color:var(--text-2)}
+.gw-legend span{display:inline-flex;align-items:center;gap:6px}
+.gw-legend i{display:inline-block;width:8px;height:8px;border-radius:2px}
 .gw-chart svg{display:block;width:100%;height:auto}
-.gw-chart .ax{font-size:10px;fill:var(--gw-plot-text)}
-.gw-chart .grid{stroke:var(--gw-separator);stroke-width:1}
-.gw-chart .zero{stroke:var(--gw-label-3);stroke-width:1}
-.gw-chart .soc{fill:none;stroke:var(--gw-soc);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
-.gw-chart .kw{fill:none;stroke:var(--gw-kw);stroke-width:1.5;stroke-linejoin:round}
-.gw-chart .kwfill{fill:var(--gw-kw-fill);stroke:none}
-.gw-chart .msg{font-size:12px;fill:var(--gw-label-2);text-anchor:middle}
-.gw-caption{font-size:11px;color:var(--gw-label-2);margin-top:var(--gw-s1) !important}
+.gw-chart .ax{font-family:var(--font-mono);font-size:9.5px;fill:var(--text-2)}
+.gw-chart .grid{stroke:var(--hairline-strong);stroke-width:1;stroke-dasharray:2 3}
+.gw-chart .paper{fill:none;stroke:var(--hairline);stroke-width:.5}
+.gw-chart .band{fill:var(--surface-2);stroke:var(--hairline);stroke-width:1}
+.gw-chart .ax.is-now{fill:var(--text)}
+.gw-chart .zero{stroke:var(--text-3);stroke-width:1;stroke-dasharray:2 3}
+.gw-chart .soc{fill:none;stroke:var(--soc);stroke-width:1.75;stroke-linejoin:round;stroke-linecap:round}
+.gw-chart .kw{fill:none;stroke:var(--kw);stroke-width:1.5;stroke-linejoin:round} /* D-Y3: 1.5 so the yellow reads on white */
+.gw-chart .kwfill{fill:var(--kw-fill);stroke:none}
+.gw-chart .msg{font:var(--t-label);fill:var(--text-2);text-anchor:middle}
+.gw-caption{font:var(--t-caption);color:var(--text-2);margin-top:var(--s2) !important}
 
-/* Actions: menu-like rows */
-.gw-actions{padding:6px 0 0;margin-top:2px;position:relative;display:flex;flex-direction:column}
-.gw-act{all:unset;display:flex;align-items:center;gap:var(--gw-s2);height:24px;padding:0 var(--gw-s3) 0 10px;
-  border-radius:var(--gw-row-radius);color:var(--gw-label);font-size:13px}
-.gw-act .gw-ic{color:var(--gw-label-2)}
-.gw-act .k{margin-left:auto;color:var(--gw-label-2)}
-#root:not(.gw-still) .gw-act:not([aria-disabled="true"]):hover,.gw-act:not([aria-disabled="true"]):focus-visible{background:var(--gw-highlight);color:var(--gw-on-highlight)}
-#root:not(.gw-still) .gw-act:not([aria-disabled="true"]):hover .gw-ic,#root:not(.gw-still) .gw-act:not([aria-disabled="true"]):hover .k,
-.gw-act:focus-visible .gw-ic,.gw-act:focus-visible .k{color:var(--gw-on-highlight)}
-.gw-act[aria-disabled="true"],.gw-act[aria-disabled="true"] .gw-ic,.gw-act[aria-disabled="true"] .k{color:var(--gw-label-3)}
-@media (forced-colors: active){ .gw-act:focus-visible{outline:2px solid Highlight} }
+/* ---- Actions: Sign In… (primary) and Turn On Notifications… (secondary), full width ---- */
+.gw-actions{display:flex;flex-direction:column;gap:var(--s2);padding:var(--gw-pad);border-top:1px solid var(--hairline)}
+.gw-act{all:unset;box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:var(--s2);height:32px;padding:0 var(--s3);
+  border-radius:var(--r-ctl);font:var(--t-body);font-weight:500;color:var(--text);background:var(--surface-3);box-shadow:inset 0 0 0 1px var(--hairline);
+  transition:background-color var(--press) ease-out,scale var(--press) ease-out}
+.gw-act .gw-ic{color:inherit;width:14px;height:14px}
+.gw-act.is-primary{background:var(--primary);color:var(--on-primary);box-shadow:none}
+@media (hover:hover){ #root:not(.gw-still) .gw-act:not([aria-disabled="true"]):not(.is-primary):hover:not(:active){background:color-mix(in srgb,var(--surface-3),var(--text) 6%)}
+  #root:not(.gw-still) .gw-act.is-primary:hover{background:color-mix(in srgb,var(--primary),var(--surface) 12%)} }
+@media (prefers-reduced-motion:no-preference){ .gw-act:not([aria-disabled="true"]):active{scale:.98} }
+.gw-act:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.gw-act[aria-disabled="true"]{color:var(--text-3)}
+@media (forced-colors:active){ .gw-act{border:1px solid ButtonText} .gw-act:focus-visible{outline:2px solid Highlight} }
 
-/* ---- T-002 ---- */
-
-/* Refresh: icon-only button at the top right of the first row. 24 pt target, 16 pt glyph.
-   Off-scale margins on purpose: −2 top/bottom keeps the row 20 pt (24 − 20); −6 right puts the glyph's ink on the text edge. */
-.gw-icon-btn{all:unset;flex:none;display:grid;place-items:center;width:24px;height:24px;margin:-2px -6px -2px 0;border-radius:var(--gw-row-radius);
-  color:var(--gw-label-2);transition:background-color var(--gw-press) ease-out,scale var(--gw-press) ease-out}
+/* ---- Icon buttons (Refresh, Settings, Quit): 28 pt target, 16 pt glyph ---- */
+.gw-icon-btn{all:unset;position:relative;flex:none;display:grid;place-items:center;width:28px;height:28px;margin:2px 0 0;border-radius:var(--r-ctl);
+  box-shadow:inset 0 0 0 1px var(--edge);color:var(--text-2);transition:background-color var(--press) ease-out,scale var(--press) ease-out}
 .gw-icon-btn .gw-ic{color:inherit}
-/* T-024: no hover until the pointer really moves (#root.gw-still, T-013): a click on Settings or Quit hides the panel
-   with the pointer on the button. :not(:active) lets the press fill win over this rule's higher specificity (T-023). */
-@media (hover:hover){ #root:not(.gw-still) .gw-icon-btn:not([aria-disabled="true"]):hover:not(:active){background:var(--gw-fill-hover);color:var(--gw-label)} }
-.gw-icon-btn:not([aria-disabled="true"]):active{background:var(--gw-fill-press);color:var(--gw-label)}
+/* T-024: no hover until the pointer really moves (#root.gw-still, T-013); :not(:active) lets the press fill win (T-023). */
+@media (hover:hover){ #root:not(.gw-still) .gw-icon-btn:not([aria-disabled="true"]):hover:not(:active){background:var(--fill-hover);color:var(--text)} }
+.gw-icon-btn:not([aria-disabled="true"]):active{background:var(--fill-press);color:var(--text)}
 @media (prefers-reduced-motion:no-preference){ .gw-icon-btn:not([aria-disabled="true"]):active{scale:.96} }
-.gw-icon-btn:focus-visible{outline:2px solid var(--gw-focus);outline-offset:0}
-.gw-icon-btn[aria-disabled="true"]{color:var(--gw-label-3)}
-.gw-icon-btn.is-busy{color:var(--gw-label-2)}
-.gw-icon-btn.is-busy .gw-ic{animation:gw-spin var(--gw-spin) linear infinite}
+.gw-icon-btn:focus-visible{outline:2px solid var(--focus);outline-offset:0}
+.gw-icon-btn[aria-disabled="true"]{color:var(--text-3)}
+.gw-icon-btn.is-busy .gw-ic{animation:gw-spin 800ms linear infinite}
 @media (prefers-reduced-motion:reduce){ .gw-icon-btn.is-busy .gw-ic{animation:gw-pulse 1.2s ease-in-out infinite alternate} }
 @keyframes gw-spin{to{rotate:360deg}}
 @keyframes gw-pulse{from{opacity:1}to{opacity:.35}}
 
-/* Chart read-out: the whole plot is the target (HIG Charts). */
+/* ---- Chart read-out: the references' dark box with mono text ---- */
 .gw-plot{position:relative;border-radius:4px;outline:none;cursor:default;touch-action:none}
-.gw-plot[data-plot]:focus-visible{outline:2px solid var(--gw-focus);outline-offset:2px}
-.gw-chart .cur-line{stroke:var(--gw-cursor);stroke-width:1;shape-rendering:crispEdges}
-.gw-chart .cur-soc{fill:var(--gw-soc);stroke:var(--gw-dot-ring);stroke-width:1.5}
-.gw-chart .cur-kw{fill:var(--gw-kw);stroke:var(--gw-dot-ring);stroke-width:1.5}
-/* Max 156 pt so one side of the line always has room (see TIP_GAP / TIP_PAD in panel.js). */
-.gw-tip{position:absolute;z-index:1;box-sizing:border-box;min-width:120px;max-width:156px;padding:var(--gw-s1) var(--gw-s2);border-radius:var(--gw-s2);pointer-events:none;
-  background:var(--gw-tip-bg);border:1px solid transparent;
-  box-shadow:0 0 0 .5px var(--gw-tip-edge),var(--gw-tip-shadow);
-  font-size:12px;line-height:16px;color:var(--gw-label);white-space:nowrap}
+.gw-plot[data-plot]:focus-visible{outline:2px solid var(--focus);outline-offset:4px}
+.gw-chart .cur-line{stroke:var(--text-2);stroke-width:1;stroke-dasharray:2 2;shape-rendering:crispEdges}
+.gw-chart .cur-soc{fill:var(--soc);stroke:var(--surface);stroke-width:1.5}
+.gw-chart .cur-kw{fill:var(--kw);stroke:var(--surface);stroke-width:1.5}
+.gw-tip{position:absolute;z-index:1;box-sizing:border-box;min-width:120px;max-width:156px;padding:6px var(--s2) 7px;border-radius:var(--r-tip);pointer-events:none;
+  background:var(--tip-bg);box-shadow:0 0 0 1px var(--tip-edge),var(--pop-shadow);
+  font:var(--t-label);color:var(--text);white-space:nowrap}
 .gw-tip[hidden]{display:none}
-.gw-tip-time{font-size:11px;line-height:14px;color:var(--gw-label-2);margin-bottom:var(--gw-s1) !important}
-.gw-tip-row{display:flex;align-items:center;gap:var(--gw-s1)}
-.gw-tip-row i{flex:none;width:8px;height:2px;border-radius:1px}
-.gw-tip-row i.soc{background:var(--gw-soc)} .gw-tip-row i.kw{background:var(--gw-kw)}
-.gw-tip-row span{color:var(--gw-label-2);flex:1}
-.gw-tip-row b{font-weight:600;margin-left:var(--gw-s2)}
-.gw-tip-none{color:var(--gw-label-2)}
-@media (forced-colors:active){ .gw-tip{border-color:CanvasText} .gw-plot[data-plot]:focus-visible,.gw-icon-btn:focus-visible{outline-color:Highlight} }
+.gw-tip-time{font:var(--t-mono-sm);color:var(--text-2);margin-bottom:3px !important}
+.gw-tip-row{display:flex;align-items:center;gap:6px;line-height:18px}
+.gw-tip-row i{flex:none;width:6px;height:6px;border-radius:1.5px}
+.gw-tip-row i.soc{background:var(--soc)} .gw-tip-row i.kw{background:var(--kw)}
+.gw-tip-row span{color:var(--text-2);flex:1}
+.gw-tip-row b{font:var(--t-mono);font-size:12px;margin-left:var(--s2)}
+.gw-tip-none{color:var(--text-2)}
+@media (forced-colors:active){ .gw-tip{border:1px solid CanvasText} .gw-plot[data-plot]:focus-visible,.gw-icon-btn:focus-visible{outline-color:Highlight} }
 
-
-/* ---- T-015 · Temperatures ----
-   Icon, then two equal columns (Inverter | Battery). Each: label · value · word (only when not fine) · trend, and under it
-   a 3 pt heat bar on that reading's scale. An empty column stays empty, so nothing moves when a reading comes or goes.
-   D-O10: text tokens are 4.5:1 or more for the 86 % panel over a white, mid-grey or black desktop (light: Warm 4.8, Hot 4.6;
-   dark: Warm 6.3, Hot 4.7). The bar's orange and red are marks (the word carries the meaning), so they keep the system hues. */
-.gw-panel{--gw-warm:#6E4D00;--gw-hot:#B00012;--gw-bar-warm:#FF9500;--gw-bar-hot:#D70015}
-@media (prefers-color-scheme: dark){ .gw-panel{--gw-warm:#FFD60A;--gw-hot:#FFA39E;--gw-bar-warm:#FF9F0A;--gw-bar-hot:#FF453A} }
-.gw-temps .gw-row{display:grid;grid-template-columns:16px 1fr 1fr;column-gap:var(--gw-s2);align-items:start}
-.gw-temps .gw-ic{margin-top:1px}
-.gw-pair{display:flex;flex-direction:column;gap:5px;min-width:0}
-/* D-O9: the top line has the whole column; when it is full the arrow wraps onto a second line that is clipped. */
-.gw-pair-top{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:var(--gw-s1);white-space:nowrap;height:1lh;overflow:hidden}
-.gw-pair-top>span:first-child{color:var(--gw-label-2)}
-.gw-pair b{font-weight:600}
-.gw-pair em{font-style:normal;font-weight:600;font-size:12px}
-.gw-trend{align-self:center;display:inline-flex;color:var(--gw-label-2)} .gw-trend svg{width:10px;height:10px}
-.gw-meter{display:block;height:3px;margin-right:var(--gw-s3);border-radius:1.5px;background:var(--gw-separator);overflow:hidden}
-.gw-meter i{display:block;height:100%;border-radius:1.5px;background-repeat:no-repeat}
-/* Heat scale per reading: green while fine, orange at the Warm limit, red at Hot. Stops sit on each scale's limits:
-   inverter 0–80 °C (Warm 60 = 75 %, Hot 70 = 87.5 %), battery 0–60 °C (Warm 40 = 66.7 %, Hot 50 = 83.3 %). */
-.gw-meter.is-inverter i{background-image:linear-gradient(90deg,var(--gw-green) 0 55%,var(--gw-bar-warm) 75%,var(--gw-bar-hot) 87.5% 100%)}
-.gw-meter.is-battery i{background-image:linear-gradient(90deg,var(--gw-green) 0 48%,var(--gw-bar-warm) 66.7%,var(--gw-bar-hot) 83.3% 100%)}
-.gw-pair.is-cold .gw-meter i{background-image:none;background-color:var(--gw-label-3)} /* at or below 0 °C: a grey sliver, the word says Cold */
-.gw-pair.is-warm b,.gw-pair.is-warm em{color:var(--gw-warm)}
-.gw-pair.is-hot b,.gw-pair.is-hot em{color:var(--gw-hot)}
-.gw-pair.is-cold em{color:var(--gw-label)}
-@media (forced-colors:active){ .gw-meter{border:1px solid CanvasText} .gw-meter i{background:CanvasText} }
-
-/* ---- T-020 · Today's cut strip (Grid section) ---- */
-/* Strip: the Stats strip (ui/strip.js) on the panel's tokens, under the text column.
-   T-023: it is the button to Settings › Stats. Hover and press fill a box 4 pt around it (the focus ring's spot),
-   with the Refresh button's fills and timing; a spread shadow, so nothing moves. */
-.gw-panel{--gw-track:rgba(0,0,0,.07)}
-@media (prefers-color-scheme: dark){ .gw-panel{--gw-track:rgba(255,255,255,.09)} }
-.gw-strip{margin-top:var(--gw-s2);padding-left:24px}
-.gw-strip-plot{position:relative;width:280px;border-radius:4px;outline:none;cursor:pointer;
-  transition:background-color var(--gw-press) ease-out,box-shadow var(--gw-press) ease-out}
-@media (hover:hover){ #root:not(.gw-still) .gw-strip-plot:hover:not(.is-press){background:var(--gw-fill-hover);box-shadow:0 0 0 4px var(--gw-fill-hover)} }
-.gw-strip-plot.is-press{background:var(--gw-fill-press);box-shadow:0 0 0 4px var(--gw-fill-press)}
-.gw-strip-plot:focus-visible{outline:2px solid var(--gw-focus);outline-offset:4px}
+/* ---- Today's cut strip (T-020/T-023/T-025): thin track, round-ended cuts, dotted hours to come; opens Stats ---- */
+.gw-strip{margin-top:var(--s3)}
+.gw-outlook > .gw-strip:first-child{margin-top:2px}
+.gw-strip-plot{position:relative;width:300px;border-radius:4px;outline:none;cursor:pointer;
+  transition:background-color var(--press) ease-out,box-shadow var(--press) ease-out}
+@media (hover:hover){ #root:not(.gw-still) .gw-strip-plot:hover:not(.is-press):not(:active){background:var(--fill-hover);box-shadow:0 0 0 4px var(--fill-hover)} }
+.gw-strip-plot:active,.gw-strip-plot.is-press{background:var(--fill-press);box-shadow:0 0 0 4px var(--fill-press)}
+.gw-strip-plot:focus-visible{outline:2px solid var(--focus);outline-offset:4px}
 .gw-strip svg{display:block;overflow:visible}
-.gw-strip .track{fill:var(--gw-track)}
-.gw-strip .track-rest{fill:none;stroke:var(--gw-label-2);stroke-dasharray:2 3}
-.gw-strip .cut{fill:var(--gw-red);transition:opacity var(--gw-press) ease-out}
+.gw-strip .track{fill:var(--track)}
+.gw-strip .track-rest{fill:none;stroke:var(--text-2);stroke-dasharray:1 3;stroke-linecap:round}
+.gw-strip .cut{fill:var(--grid-off);transition:opacity var(--press) ease-out}
 .gw-strip .hit{fill:transparent}
-.gw-strip .now{stroke:var(--gw-label);stroke-width:1.5;stroke-linecap:round}
-.gw-strip text{font-size:10px;fill:var(--gw-plot-text)}
-.gw-strip-plot.is-reading .cut:not(.is-on){opacity:.4}
-.gw-strip .gw-tip{top:16px;max-width:220px} /* under the bar, over the hour labels */
-.gw-tip-row i.off{background:var(--gw-red)}
-/* T-025: the strip's other parts; green = grid on (as the status icon), dashes = no readings (as the strip's dashed hours) */
-.gw-tip-row i.on{background:var(--gw-green)} .gw-tip-row i.gap{background:repeating-linear-gradient(90deg,var(--gw-label-2) 0 2px,transparent 2px 4px)}
+.gw-strip .now{stroke:var(--text);stroke-width:1.5;stroke-linecap:round}
+.gw-strip text{font-family:var(--font-mono);font-size:9.5px;fill:var(--text-2)}
+.gw-strip-plot.is-reading .cut:not(.is-on){opacity:.35}
+.gw-strip .gw-tip{top:16px;max-width:220px}
+.gw-tip-row i.off{background:var(--grid-off)}
+.gw-tip-row i.on{background:var(--grid-on)} .gw-tip-row i.gap{background:repeating-linear-gradient(90deg,var(--text-2) 0 2px,transparent 2px 4px)}
 @media (forced-colors:active){ .gw-strip .cut{fill:Highlight} .gw-strip-plot:focus-visible{outline-color:Highlight} }
 
-/* ---- T-024 · Footer: Settings · last update · Quit on one 24 pt row ----
-   The two buttons are the Refresh button (.gw-icon-btn: 24 pt target, 16 pt glyph, hover / press / focus / motion).
-   Left 8 = 12 − 4, so the gear's glyph sits on the icon column; right 6 = 12 − 6, so the power glyph sits under Refresh's.
-   The text is centred between them (1 pt left of the panel's centre, by the 2 pt asymmetry). */
-.gw-foot{position:relative;display:grid;grid-template-columns:24px minmax(0,1fr) 24px;align-items:center;column-gap:var(--gw-s2);
-  margin-top:2px;padding:6px 6px 0 8px}
-.gw-foot::before{content:"";position:absolute;top:0;left:var(--gw-s3);right:var(--gw-s3);height:1px;background:var(--gw-separator)}
-.gw-actions + .gw-foot{margin-top:6px} /* under action rows too: its own hairline, so the icons never read as a third row */
+/* ---- Footer (T-024): Settings · last update · Quit ---- */
+.gw-foot{display:grid;grid-template-columns:28px minmax(0,1fr) 28px;align-items:center;column-gap:var(--s2);
+  padding:5px 7px}
 .gw-foot .gw-icon-btn{margin:0}
-.gw-when{display:flex;align-items:center;justify-content:center;gap:var(--gw-s1);min-width:0;
-  font-size:12px;line-height:16px;color:var(--gw-label-2);white-space:nowrap}
+.gw-when{display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;font:var(--t-label);color:var(--text-2);white-space:nowrap}
 .gw-when span{overflow:hidden;text-overflow:ellipsis}
-.gw-when .gw-ic{width:14px;height:14px;color:var(--gw-label)}
-.gw-when.is-stale{color:var(--gw-label);font-weight:600}
+.gw-when .gw-ic{width:14px;height:14px;color:var(--alert)}
+.gw-when.is-stale{color:var(--text)}
 
-/* ---- T-022 · Update available: a 6 pt dot on the gear's top right, ringed in the panel colour so it reads on hover too ---- */
-.gw-icon-btn{position:relative}
-.gw-dot{position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--gw-badge);box-shadow:0 0 0 1.5px var(--gw-dot-ring)}
+/* ---- Update available (T-022): a 6 pt dot on the gear, ringed in the card colour ---- */
+.gw-dot{position:absolute;top:-2px;right:-2px;width:7px;height:7px;border-radius:50%;background:var(--badge);box-shadow:0 0 0 2px var(--frame)}
 @media (forced-colors:active){ .gw-dot{background:Highlight} }
+
+/* ---- T-029 (owner) · Opening motion: only while .is-opening (set by GW.animateOpen when the panel opens) ----
+   Strong ease-out, staggered, ≈ 0.75 s in all, transform / clip-path / opacity only. None of it under reduced motion. */
+@media (prefers-reduced-motion:no-preference){
+  /* Owner: one after another, top to bottom, 90 ms apart: strip 0 · battery cells 90 · heat bars 180 · chart 270 (ends ≈ 730 ms) */
+  .gw-panel.is-opening .gw-strip .cut{transform-box:fill-box;transform-origin:left center;animation:gw-grow 420ms var(--ease-out) both}
+  .gw-panel.is-opening .gw-cells i.on{animation:gw-cell 260ms var(--ease-out) both;animation-delay:calc(90ms + var(--i) * 14ms)}
+  .gw-panel.is-opening .gw-meter i{transform-origin:left center;animation:gw-grow 420ms var(--ease-out) 180ms both}
+  .gw-panel.is-opening .gw-chart .lines{animation:gw-wipe 460ms var(--ease-out) 270ms both}
+}
+@keyframes gw-wipe{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
+@keyframes gw-cell{from{opacity:0;transform:scaleY(.5)}to{opacity:1;transform:none}}
+@keyframes gw-grow{from{transform:scaleX(0)}to{transform:none}}

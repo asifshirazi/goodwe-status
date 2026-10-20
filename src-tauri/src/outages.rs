@@ -307,8 +307,8 @@ pub fn next_cut(outs: &[Outage], now: f64, stale: bool) -> Option<[String; 2]> {
             if stale {
                 return None;
             }
-            let when = if (st.floor() as i64).div_euclid(DAY) == today { "not yet today" } else { "not yet" };
-            return Some([format!("Cut usually around {}, {when}", hm(round5(st))), back(e)]);
+            // T-029 (owner): no ', not yet today' tail, so the line fits the panel's one-line subtitle.
+            return Some([format!("Cut usually around {}", hm(round5(st))), back(e)]);
         }
         let tomorrow = if round5(st).div_euclid(DAY) > today { " tomorrow" } else { "" };
         let l2 = end.map_or_else(|| "end time varies (last 14 days)".to_owned(), back);
@@ -717,15 +717,15 @@ mod tests {
     #[test]
     fn next_cut_due_not_yet_today() {
         // N-B, real
-        assert_eq!(next("2026-10-16 10:28", false), lines("Cut usually around 9:05\u{a0}AM, not yet today", "back around 12:05\u{a0}PM (last 14 days)"));
+        assert_eq!(next("2026-10-16 10:28", false), lines("Cut usually around 9:05\u{a0}AM", "back around 12:05\u{a0}PM (last 14 days)"));
     }
 
     #[test]
     fn next_cut_due_after_midnight() {
         // N-B2, real
-        assert_eq!(next("2026-10-15 23:50", false), lines("Cut usually around 11:35\u{a0}PM, not yet today", "back around 2:05\u{a0}AM (last 14 days)"));
-        assert_eq!(next("2026-10-16 00:05", false), lines("Cut usually around 11:35\u{a0}PM, not yet", "back around 2:05\u{a0}AM (last 14 days)"));
-        assert_eq!(next("2026-10-16 02:02", false), lines("Cut usually around 11:35\u{a0}PM, not yet", "back around 2:05\u{a0}AM (last 14 days)"));
+        assert_eq!(next("2026-10-15 23:50", false), lines("Cut usually around 11:35\u{a0}PM", "back around 2:05\u{a0}AM (last 14 days)"));
+        assert_eq!(next("2026-10-16 00:05", false), lines("Cut usually around 11:35\u{a0}PM", "back around 2:05\u{a0}AM (last 14 days)"));
+        assert_eq!(next("2026-10-16 02:02", false), lines("Cut usually around 11:35\u{a0}PM", "back around 2:05\u{a0}AM (last 14 days)"));
         assert_eq!(next("2026-10-16 02:05", false), lines("Next cut usually around 9:05\u{a0}AM", "back around 12:05\u{a0}PM (last 14 days)"));
     }
 
@@ -744,7 +744,7 @@ mod tests {
     #[test]
     fn next_cut_flicker_is_not_done() {
         // real: the 12:59–13:24 flicker doesn't mark the 13:35 cut done
-        assert_eq!(next("2026-10-13 13:35", false), lines("Cut usually around 1:35\u{a0}PM, not yet today", "back around 4:30\u{a0}PM (last 14 days)"));
+        assert_eq!(next("2026-10-13 13:35", false), lines("Cut usually around 1:35\u{a0}PM", "back around 4:30\u{a0}PM (last 14 days)"));
     }
 
     #[test]

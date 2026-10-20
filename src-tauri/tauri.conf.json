@@ -11,8 +11,7 @@
       {
         "label": "panel", "title": "GoodWe Status", "url": "index.html", "width": 340, "height": 480, "visible": false,
         "decorations": false, "transparent": true, "resizable": false, "alwaysOnTop": true,
-        "skipTaskbar": true, "focus": false, "shadow": true,
-        "windowEffects": { "effects": ["popover"], "state": "active", "radius": 12 }
+        "skipTaskbar": true, "focus": false, "shadow": true
       },
       {
         "label": "signin", "title": "Sign in to SEMS Portal", "url": "signin.html", "width": 320, "height": 520,

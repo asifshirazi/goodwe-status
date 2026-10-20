@@ -12,6 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, WebviewWindow};
 use tauri_plugin_opener::OpenerExt;
 
@@ -61,6 +62,63 @@ pub struct Settings {
     wanted: AtomicBool,
     /// The real login-item state, read on open, when General is shown, and after a change.
     open_at_login: AtomicBool,
+    /// When the user last switched panes: the resize that follows eases (T-029 § 2).
+    switched: Mutex<Option<Instant>>,
+}
+
+/// Ease the window's height (240 ms) only for the re-measure right after a pane switch, never on an
+/// open, a later redraw of the same pane (the 1 s window drops a stale switch whose height did not change)
+/// or with Reduce motion (the setting or macOS's).
+pub fn eases(switched: Option<Instant>, now: Instant, show: bool, reduce: bool) -> bool {
+    !show && !reduce && switched.is_some_and(|t| now.duration_since(t) < Duration::from_secs(1))
+}
+
+#[cfg(target_os = "macos")]
+fn os_reduce_motion() -> bool {
+    objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+}
+#[cfg(not(target_os = "macos"))]
+fn os_reduce_motion() -> bool {
+    false
+}
+
+/// The content becomes `h` tall with the top edge fixed, over `secs` on the --ease-out curve; 0 = at once.
+/// Every visible resize goes through the animator, so a new height replaces one still easing.
+#[cfg(target_os = "macos")]
+fn resize_keep_top(win: &WebviewWindow, h: f64, secs: f64) {
+    use objc2_app_kit::{NSAnimatablePropertyContainer, NSAnimationContext, NSWindow};
+    use objc2_quartz_core::CAMediaTimingFunction;
+    let w = win.clone();
+    let _ = win.run_on_main_thread(move || {
+        let Ok(p) = w.ns_window() else { return };
+        // SAFETY: tao's live NSWindow, used on the main thread inside this call only.
+        let ns: &NSWindow = unsafe { &*p.cast() };
+        let old = ns.frame();
+        let mut c = ns.contentRectForFrameRect(old);
+        c.size.width = WIN_W;
+        c.size.height = h;
+        let mut f = ns.frameRectForContentRect(c);
+        f.origin.x = old.origin.x;
+        f.origin.y = old.origin.y + old.size.height - f.size.height; // AppKit's y grows upward
+        let group = block2::RcBlock::new(|ctx: std::ptr::NonNull<NSAnimationContext>| {
+            // SAFETY: AppKit hands the current context for the duration of the block.
+            let ctx = unsafe { ctx.as_ref() };
+            ctx.setDuration(secs);
+            ctx.setTimingFunction(Some(&CAMediaTimingFunction::functionWithControlPoints(0.23, 1.0, 0.32, 1.0)));
+            ns.animator().setFrame_display(f, true);
+        });
+        NSAnimationContext::runAnimationGroup(&group);
+    });
+}
+
+/// Elsewhere: at once, the top edge put back (the toolkit keeps the bottom).
+#[cfg(not(target_os = "macos"))]
+fn resize_keep_top(win: &WebviewWindow, h: f64, _secs: f64) {
+    let top = win.outer_position();
+    let _ = win.set_size(LogicalSize::new(WIN_W, h));
+    if let Ok(p) = top {
+        let _ = win.set_position(p);
+    }
 }
 
 /// The pane to show: the last one shown, else General.
@@ -129,6 +187,8 @@ pub struct General {
     pub show_cuts: bool,
     /// False once a reading shows no battery: no cut history, so the switch is dimmed.
     pub has_battery: bool,
+    /// Reduce motion (T-029): no opening motion in the panel, no pane fade here.
+    pub reduce_motion: bool,
 }
 
 /// The helper's case from the last reading; before the first one, 'both' (T-015 § 2).
@@ -163,6 +223,7 @@ fn state(app: &AppHandle) -> Option<State> {
             temps,
             show_cuts: auto.show_cuts(),
             has_battery,
+            reduce_motion: auto.reduce_motion(),
         },
         stats,
         about: About { version: app.package_info().version.to_string(), update: app.state::<crate::updater::Updater>().view() },
@@ -221,6 +282,7 @@ pub fn open(app: &AppHandle) {
     if shown {
         app.state::<Arc<tokio::sync::Notify>>().notify_one();
     }
+    crate::accent::apply(app);
     show_pane(app, p);
     if let Some(s) = state(app).and_then(|s| serde_json::to_value(s).ok()) {
         let _ = app.emit_to(WIN, "settings-open", s);
@@ -249,19 +311,23 @@ pub fn settings_ready(app: AppHandle) {
     }
 }
 
-/// The page is `h` tall. The top edge stays put (AppKit keeps the bottom); at most the screen's
+/// The page is `h` tall. The top edge stays put, eased right after a pane switch (`eases`); at most the screen's
 /// visible height − 80, then the pane scrolls. `show`: bring it forward (Accessory app: activate
 /// first), centred the first time it shows.
 #[tauri::command]
 pub fn settings_show(app: AppHandle, win: WebviewWindow, h: f64, show: bool) {
     let visible = win.is_visible().unwrap_or(false);
     let max = win.current_monitor().ok().flatten().map_or(900.0, |m| m.work_area().size.to_logical::<f64>(m.scale_factor()).height - 80.0);
-    let top = win.outer_position().ok().filter(|_| visible);
-    let _ = win.set_size(LogicalSize::new(WIN_W, h.ceil().clamp(200.0, max.max(200.0))));
-    match top {
-        Some(p) => drop(win.set_position(p)),
-        None if show => drop(win.center()),
-        None => {}
+    let h = h.ceil().clamp(200.0, max.max(200.0));
+    let switched = app.state::<Settings>().switched.lock().unwrap().take();
+    if visible {
+        let reduce = app.state::<Arc<Automation>>().reduce_motion() || os_reduce_motion();
+        resize_keep_top(&win, h, if eases(switched, Instant::now(), show, reduce) { 0.24 } else { 0.0 });
+    } else {
+        let _ = win.set_size(LogicalSize::new(WIN_W, h));
+        if show {
+            let _ = win.center();
+        }
     }
     if show {
         #[cfg(target_os = "macos")]
@@ -285,6 +351,7 @@ pub async fn settings_action(app: AppHandle, a: Value) -> Result<(), String> {
             auto.cancel_connect();
             auto.set_pane(p);
             show_pane(&app, p);
+            *app.state::<Settings>().switched.lock().unwrap() = Some(Instant::now());
         }
         "signin" => signin::open(&app),
         "signout" => shell::sign_out(&app).await,
@@ -302,6 +369,11 @@ pub async fn settings_action(app: AppHandle, a: Value) -> Result<(), String> {
         "cuts" => {
             auto.set_show_cuts(on);
             app.state::<Arc<Mutex<Monitor>>>().lock().unwrap().show_cuts = on;
+            shell::refresh(&app);
+        }
+        "motion" => {
+            auto.set_reduce_motion(on);
+            app.state::<Arc<Mutex<Monitor>>>().lock().unwrap().reduce_motion = on;
             shell::refresh(&app);
         }
         "low_battery" => {
@@ -353,6 +425,7 @@ pub async fn settings_action(app: AppHandle, a: Value) -> Result<(), String> {
                 let _ = app.opener().open_url(format!("{REPO}/releases/tag/v{v}"), None::<&str>);
             }
         }
+        "refresh-devices" => auto.refresh_devices(),
         "close" => close(&app),
         "day" | "today" | "calendar" | "cal_month" | "cal_day" | "retry" => {
             let wake = stats::act(&mut app.state::<Arc<Mutex<Monitor>>>().lock().unwrap(), &a, std::time::Instant::now());
@@ -453,6 +526,34 @@ mod tests {
     }
 
     #[test]
+    fn height_eases_only_right_after_a_pane_switch() {
+        let t = Instant::now();
+        let soon = t + Duration::from_millis(50);
+        assert!(eases(Some(t), soon, false, false), "the re-measure after a switch");
+        assert!(!eases(None, soon, false, false), "a redraw of the same pane");
+        assert!(!eases(Some(t), soon, true, false), "an open");
+        assert!(!eases(Some(t), soon, false, true), "Reduce motion");
+        assert!(!eases(Some(t), t + Duration::from_secs(2), false, false), "a stale switch whose height did not change");
+    }
+
+    #[test]
+    fn reduce_motion_saved_and_off_by_default() {
+        let hooks = || crate::automation::Hooks { changed: Box::new(|| {}), log: Box::new(|_| {}), fail: Box::new(|_| {}), grid_now: Box::new(|| None) };
+        let p = std::env::temp_dir().join(format!("gw-motion-{}.json", std::process::id()));
+        // A settings file from before T-029 (no field): off, so the panel's opening motion plays.
+        std::fs::write(&p, r#"{"devices":[],"pane":"general"}"#).unwrap();
+        let auto = Automation::new(Some(p.clone()), hooks());
+        assert!(!auto.reduce_motion());
+        auto.set_reduce_motion(true);
+        assert!(Automation::new(Some(p.clone()), hooks()).reduce_motion(), "saved");
+        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(saved["reduce_motion"], true, "the name in settings.json");
+        auto.set_reduce_motion(false);
+        assert!(!Automation::new(Some(p.clone()), hooks()).reduce_motion());
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
     fn account_only_while_signed_in() {
         let mut m = Monitor::new(true);
         assert_eq!(account(&m), Account { signed_in: true, email: None }, "before the Keychain answers: 'Signed in'");
@@ -498,7 +599,7 @@ mod tests {
         let s = State {
             pane: "general",
             account: account(&Monitor::new(false)),
-            general: General { open_at_login: true, low_battery: 20, show_temps: true, temps: "both", show_cuts: true, has_battery: true },
+            general: General { open_at_login: true, low_battery: 20, show_temps: true, temps: "both", show_cuts: true, has_battery: true, reduce_motion: false },
             stats: stats::view(&Monitor::new(false), std::time::Instant::now()),
             about: About { version: "0.1.2".into(), update: crate::updater::Updates::new("0.1.2", Default::default()).view() },
             auto: auto.view(false),
@@ -508,7 +609,7 @@ mod tests {
         for k in ["pane", "account", "general", "stats", "about", "automation", "tuya", "devices", "add"] {
             assert!(v.get(k).is_some(), "missing {k}: {v}");
         }
-        assert_eq!(v["general"], serde_json::json!({ "openAtLogin": true, "lowBattery": 20, "showTemps": true, "temps": "both", "showCuts": true, "hasBattery": true }));
+        assert_eq!(v["general"], serde_json::json!({ "openAtLogin": true, "lowBattery": 20, "showTemps": true, "temps": "both", "showCuts": true, "hasBattery": true, "reduceMotion": false }));
         assert_eq!(v["about"], serde_json::json!({ "version": "0.1.2", "update": { "kind": "current" } }));
     }
 }
