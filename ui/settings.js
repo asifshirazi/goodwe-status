@@ -119,7 +119,7 @@
 
   // ---- Automation pane ----
   // Change 3: no switch at the top, one line of intro (or the helper); each device row has its own switch.
-  const automation = a => `<p class="intro">${esc(a.hint || 'Devices that are on change when the grid goes off or comes back, each after its own delay.')}</p>`;
+  const automation = a => `<p class="intro">${esc(a.hint || 'When the grid goes off or comes back, each device that’s on switches after its delay.')}</p>`;
   function devices(s) {
     const rows = s.devices.map((d, i) => {
       // T-029 (owner): the status is a dot before the name, its words in the tooltip (title, drawn by macOS) and for

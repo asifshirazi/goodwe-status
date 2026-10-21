@@ -105,7 +105,7 @@ a:focus-visible{outline:2px solid var(--focus);outline-offset:1px;border-radius:
 .foot{margin:2px 0 0;font:var(--t-caption);color:var(--text-2)}
 .foot.has-info{display:flex;gap:8px;align-items:flex-start;margin-top:4px;padding:10px 0 2px;border-top:1px solid var(--hairline)}
 .foot.has-info svg{flex:none;width:14px;height:14px;margin-top:0;color:var(--text-2)}
-.intro{margin:14px 0 4px;font:var(--t-label);color:var(--text-2)}
+.intro{margin:14px 0 4px;font:var(--t-label);color:var(--text-2);min-height:32px;min-height:2lh} /* T-031: always two lines (--t-label is 16px), so a shorter hint never moves the list */
 .intro + h2,.intro + .h2row{margin-top:10px}
 .rm{all:unset;display:grid;place-items:center;width:22px;height:22px;border-radius:6px;color:var(--text-2)}
 @media (hover:hover){ .rm:hover{background:var(--fill-hover);color:var(--text)} }

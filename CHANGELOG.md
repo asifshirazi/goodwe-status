@@ -6,6 +6,7 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ### Changed
 - Your Tuya devices load once when the app starts, and then only when you click ↻ in Settings › Automation. Opening Settings or switching tabs no longer contacts Tuya.
+- Settings › Automation's intro line is reworded ("When the grid goes off or comes back, each device that's on switches after its delay.") and always keeps two lines of space, so the device list no longer jumps when you turn a device on or off.
 
 ### Fixed
 - Settings › Automation's ↻ now visibly refreshes: it spins while it loads, and it re-reads the device list. New names show, devices added in Tuya appear in Add Device…, and a device removed from Tuya keeps its rules and says "Not in your Tuya account".
