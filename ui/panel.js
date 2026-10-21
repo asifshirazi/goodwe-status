@@ -262,9 +262,11 @@
     // (the power string with its 'Battery ' dropped), then the charge as 20 cells of 5 % (owner: a battery meter, not a solid line), coloured by
     // level (owner): under 30 % red-pink, 30–49 % yellow, 50–79 % blue, 80 % and up green, then the time left:
     // the time in SF Mono, its words muted ('~6h 50m left at 0.6 kW').
+    // T-034: while charging, a mint dot before "Charging" pulses softly (still while stale or under Reduce motion), and
+    // the time-left line says the time to full ('~1h 10m to full at 3.8 kW').
     if (b) {
       const pw = b.power.replace(/^Battery /, '').replace(/^./, c => c.toUpperCase()), lv = Math.max(0, Math.min(100, parseFloat(b.soc) || 0));
-      out.push(`<section class="gw-sec gw-bat" aria-label="Battery"><div class="gw-hero"><b>${esc(b.soc)}</b><p>Battery · ${num(pw)}</p></div>`
+      out.push(`<section class="gw-sec gw-bat" aria-label="Battery"><div class="gw-hero"><b>${esc(b.soc)}</b><p>Battery · ${b.charging ? `<i class="gw-chg${st.updated && st.updated.stale ? ' is-still' : ''}" aria-hidden="true"></i>` : ''}${num(pw)}</p></div>`
         + `<span class="gw-cells is-${lv < 30 ? 'low' : lv < 50 ? 'mid' : lv < 80 ? 'high' : 'full'}" aria-hidden="true">${Array.from({ length: 20 }, (_, i) => `<i${i < Math.round(lv / 5) ? ` class="on" style="--i:${i}"` : ''}></i>`).join('')}</span>`
         + (b.left ? `<p class="gw-left"><b>${esc(b.left.time)}</b> ${num(b.left.rest)}</p>` : '') + `</section>`);
     }

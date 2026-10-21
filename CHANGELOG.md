@@ -4,6 +4,9 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ## [Unreleased]
 
+### Added
+- While the battery charges, a green dot pulses before "Charging" in the panel, and the line under the battery shows about how long until it is full (for example "~1h 10m to full at 3.8 kW"). The dot stays still with Reduce motion on, or while the data is old.
+
 ## [0.2.2] - 2026-10-21
 
 ### Changed

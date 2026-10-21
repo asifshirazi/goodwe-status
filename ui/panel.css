@@ -47,6 +47,12 @@
 .gw-cells i{border-radius:3px;background:var(--track)}
 .gw-cells i.on{background:var(--soc)}
 .gw-cells.is-low i.on{background:var(--alert)} .gw-cells.is-mid i.on{background:var(--d-yellow)} .gw-cells.is-full i.on{background:var(--d-mint)}
+/* T-034: charging dot. Only the ::after halo pulses (opacity + transform), so it adds no layout; still while stale, and
+   html.reduce-motion (tokens.css) stops it like every other animation. */
+.gw-chg{display:inline-block;position:relative;width:6px;height:6px;border-radius:50%;background:var(--d-mint);margin:0 6px 1px 1px;vertical-align:middle}
+.gw-chg::after{content:"";position:absolute;inset:0;border-radius:50%;background:var(--d-mint);opacity:0}
+@media (prefers-reduced-motion:no-preference){ .gw-chg:not(.is-still)::after{animation:gw-halo 2s ease-out infinite} }
+@keyframes gw-halo{0%{transform:scale(1);opacity:.45}70%,100%{transform:scale(2.8);opacity:0}}
 .gw-left{margin-top:8px !important;font:var(--t-label);color:var(--text-2)}
 .gw-left b{font:var(--t-mono);font-weight:500;color:var(--text)}
 .gw-left .num{color:var(--text-2)}

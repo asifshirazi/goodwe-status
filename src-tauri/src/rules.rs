@@ -91,6 +91,18 @@ pub fn time_left_min(capacity_kwh: Option<f64>, soc: f64, watts: f64) -> Option<
     Some((((min / 10.0).round() as u32) * 10).max(10))
 }
 
+/// Minutes until 100 % while charging (`watts` negative): capacity × (100 − soc) / 100 ÷ kW, rounded to
+/// 10 min, at least 10. None when not charging, full, or the capacity is unknown. No taper model
+/// (charging slows near full), so the text keeps its "~".
+pub fn time_to_full_min(capacity_kwh: Option<f64>, soc: f64, watts: f64) -> Option<u32> {
+    let cap = capacity_kwh?;
+    if -watts < IDLE_WATTS || soc >= 100.0 {
+        return None;
+    }
+    let min = cap * (100.0 - soc) / 100.0 / (-watts / 1000.0) * 60.0;
+    Some((((min / 10.0).round() as u32) * 10).max(10))
+}
+
 /// "~4h 20m" / "~40m".
 pub fn fmt_left(min: u32) -> String {
     match (min / 60, min % 60) {
@@ -282,6 +294,24 @@ mod tests {
         assert_eq!(time_left_min(Some(5.1), 86.0, -1200.0), None);
         assert_eq!(time_left_min(Some(5.1), 86.0, 5.0), None);
         assert_eq!(time_left_min(None, 86.0, 998.0), None);
+    }
+
+    #[test]
+    fn time_to_full() {
+        // 14.3 kWh × 31 % ÷ 3.8 kW = 1.17 h → 70 min → ~1h 10m
+        let t = time_to_full_min(Some(14.3), 69.0, -3800.0).unwrap();
+        assert_eq!((t, fmt_left(t)), (70, "~1h 10m".into()));
+        // 86 min rounds up to 90, 64 down to 60
+        assert_eq!(time_to_full_min(Some(14.3), 86.0, -1400.0), Some(90));
+        assert_eq!(time_to_full_min(Some(14.3), 91.0, -1200.0), Some(60));
+        // never ~0m
+        assert_eq!(time_to_full_min(Some(5.1), 99.6, -5000.0), Some(10));
+        // only while charging, below 100 %, with a capacity
+        assert_eq!(time_to_full_min(Some(5.1), 100.0, -1200.0), None);
+        assert_eq!(time_to_full_min(Some(5.1), 86.0, 998.0), None);
+        assert_eq!(time_to_full_min(Some(5.1), 86.0, -49.0), None);
+        assert_eq!(time_to_full_min(Some(5.1), 86.0, -50.0), Some(860));
+        assert_eq!(time_to_full_min(None, 86.0, -1200.0), None);
     }
 
     #[test]

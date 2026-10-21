@@ -78,6 +78,8 @@ pub struct Status {
 pub struct BatteryView {
     pub soc: String,
     pub power: String,
+    /// T-034: the panel's pulsing dot before "Charging".
+    pub charging: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub left: Option<Left>,
 }
@@ -195,9 +197,14 @@ pub fn panel(m: &Monitor, now: Instant, notifications_off: bool) -> PanelState {
     let battery = shown.and_then(|r| r.battery.as_ref()).map(|b| BatteryView {
         soc: soc_text(b.soc),
         power: rules::fmt_power(b.watts),
+        charging: -b.watts >= rules::IDLE_WATTS,
         // T-003: no "· as of" while stale: the warning row under it carries the time, and 12 h text wrapped.
-        left: rules::time_left_min(b.capacity_kwh, b.soc, b.watts)
-            .map(|min| Left { time: rules::fmt_left(min), rest: format!("left at {}", rules::fmt_watts(b.watts)) }),
+        // T-034: while charging, the same line says the time to full.
+        left: match rules::time_left_min(b.capacity_kwh, b.soc, b.watts) {
+            Some(min) => Some((min, "left at")),
+            None => rules::time_to_full_min(b.capacity_kwh, b.soc, b.watts).map(|min| (min, "to full at")),
+        }
+        .map(|(min, at)| Left { time: rules::fmt_left(min), rest: format!("{at} {}", rules::fmt_watts(b.watts)) }),
     });
     let refreshing = m.user_poll && m.signed_in;
     let updated = shown.map(|r| Updated {
@@ -339,6 +346,7 @@ mod tests {
         let b = p.battery.unwrap();
         assert_eq!((b.soc.as_str(), b.power.as_str()), ("86%", "Discharging 998 W"));
         assert_eq!(b.left, Some(Left { time: "~4h 20m".into(), rest: "left at 998 W".into() }));
+        assert!(!b.charging);
         assert_eq!(p.updated, Some(Updated { stale: false, text: "Updated 8:20\u{a0}AM".into() }));
         assert_eq!(tray(&m, t), TrayLook { icon: TrayIcon::OffRed, title: Some("86%".into()), tooltip: "Grid off · battery 86%".into() });
 
@@ -360,7 +368,7 @@ mod tests {
         m.after_history(LocalTs::parse("10/18/2026 08:20:00").unwrap().0 / 60);
         let p = panel(&m, t0, false);
         assert_eq!(p.status.detail.as_deref(), Some("Since at least 8:20\u{a0}AM"));
-        assert_eq!(p.battery.unwrap(), BatteryView { soc: "86%".into(), power: "Battery idle".into(), left: None });
+        assert_eq!(p.battery.unwrap(), BatteryView { soc: "86%".into(), power: "Battery idle".into(), charging: false, left: None });
 
         // first reading disagrees: not clear yet, plain plug
         let mut m = Monitor::new(true);
@@ -878,6 +886,27 @@ mod tests {
         let path = std::env::var("GW_FIXTURES").unwrap_or_else(|_| std::env::temp_dir().join("gw-fixtures.json").to_string_lossy().into_owned());
         std::fs::write(&path, serde_json::to_string_pretty(&out).unwrap()).unwrap();
         println!("{} states → {path}", out.len());
+    }
+
+    #[test]
+    fn charging_dot_and_time_to_full() {
+        let t0 = Instant::now();
+        let bat = |soc, watts| {
+            let mut m = Monitor::new(true);
+            m.on_reading(reading("10/18/2026 08:20:00", GridSignal::On, Some((soc, watts))), t0);
+            panel(&m, t0, false).battery.unwrap()
+        };
+        // 5.1 kWh × 31 % ÷ 1.2 kW = 79 min → ~1h 20m
+        let b = bat(69.0, -1200.0);
+        assert!(b.charging);
+        assert_eq!(b.left, Some(Left { time: "~1h 20m".into(), rest: "to full at 1.2 kW".into() }));
+        assert_eq!(bat(86.0, -640.0).left.unwrap().rest, "to full at 640 W");
+        // full: dot, no line; idle: neither; discharging: the left-at line, no dot
+        let b = bat(100.0, -300.0);
+        assert!(b.charging && b.left.is_none());
+        let b = bat(80.0, -10.0);
+        assert!(!b.charging && b.left.is_none());
+        assert!(!bat(80.0, 640.0).charging);
     }
 
     #[test]
