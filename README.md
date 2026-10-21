@@ -30,11 +30,11 @@ A macOS menu bar app that shows your home battery level and whether the grid is 
 - **Requests:** the history costs one request per past day, once: every finished day is kept in the app's data folder (`history.json`, removed on Sign Out), so a restart doesn't fetch it again. After the first sign-in the app loads every day back to the station's set-up in the background, one request at a time with a pause between them (Stats shows the progress); it never delays the grid alerts. After that the same two requests per 2-minute poll as before (today's history comes with the chart). A slow day gets 60 s and one retry; a day that still fails is tried again later.
 - **Start at login** is on after first sign-in. To turn it off: **Settings › General › Open at login**.
 
-<img src="docs/screenshots/settings-stats-light.jpg" alt="Settings, Stats pane" width="500">
+<img src="docs/screenshots/settings-stats-dark.png" alt="Settings, Stats pane, dark" width="500">
 
 ## Updates
 
-<img src="docs/screenshots/settings-about-light.jpg" alt="Settings, About pane" width="500">
+<img src="docs/screenshots/settings-about-dark.png" alt="Settings, About pane, dark" width="500">
 
 **Settings › About** shows the version, a link to this page on GitHub and the Updates row. Each time it opens, GoodWe Status quietly checks GitHub for a newer release; **Check Now** checks again. When one is found, a blue dot appears on the panel's gear and on the About tab, and the gear (or ⌘,) opens About, with what's new in that version. Nothing downloads until you click **Update and Relaunch**: the app downloads the new version (Cancel stops it), checks its signature, replaces itself in the same place and opens again. There is no notification for an update. If something fails, About says why and you keep the version you have; **Retry** tries again.
 
@@ -42,7 +42,7 @@ After an update macOS asks once for each saved Keychain item (your SEMS login an
 
 ## Device automation (Tuya)
 
-<img src="docs/screenshots/settings-light.jpg" alt="Settings, Automation pane" width="500">
+<img src="docs/screenshots/settings-automation-dark.png" alt="Settings, Automation pane, dark" width="500">
 
 Set each Tuya device's **Grid off** and **Grid on** choice (a light's mode or power, a switch's On / Off) and a **Delay** (Instant to 30 min, used both ways). If the grid changes back before the delay ends, the waiting change is dropped. The switch at the right of each device turns its automation on or off (a device you add starts on). It uses the official Tuya cloud API with your own free cloud project:
 
