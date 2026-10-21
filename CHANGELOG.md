@@ -4,6 +4,13 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ## [Unreleased]
 
+### Changed
+- Your Tuya devices load once when the app starts, and then only when you click ↻ in Settings › Automation. Opening Settings or switching tabs no longer contacts Tuya.
+
+### Fixed
+- Settings › Automation's ↻ now visibly refreshes: it spins while it loads, and it re-reads the device list. New names show, devices added in Tuya appear in Add Device…, and a device removed from Tuya keeps its rules and says "Not in your Tuya account".
+- Each device's dot now shows its online status: green when online, red when offline or when a change failed, and yellow while it waits out its delay. A failed change stays red until the next refresh finds the device online; it stays in the log.
+
 ## [0.2.1] - 2026-10-20
 
 ### Added

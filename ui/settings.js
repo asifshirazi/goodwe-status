@@ -123,10 +123,12 @@
   function devices(s) {
     const rows = s.devices.map((d, i) => {
       // T-029 (owner): the status is a dot before the name, its words in the tooltip (title, drawn by macOS) and for
-      // VoiceOver (aria-label, plus a hidden live line). First match: spinner = being set · yellow = waiting out its delay ·
-      // red = offline or the last change failed · green = the last change worked · empty ring = nothing has happened yet.
+      // VoiceOver (aria-label, plus a hidden live line). T-030 (owner), online status first: spinner = being set ·
+      // yellow = waiting out its delay · red = offline, not in Tuya, or the last change failed · green = online in Tuya ·
+      // empty ring only while the online state isn't known yet.
       const [kind, text] = d.setting ? ['busy', d.setting] : d.waiting ? ['wait', d.waiting] : d.offline ? ['bad', 'Offline in Tuya']
-        : d.last ? [d.last.failed ? 'bad' : 'ok', d.last.text] : ['none', ''];
+        : d.missing ? ['bad', 'Not in your Tuya account'] : d.last && d.last.failed ? ['bad', d.last.text]
+        : d.online ? ['ok', d.last ? 'Online · ' + d.last.text : 'Online in Tuya'] : d.last ? ['ok', d.last.text] : ['none', ''];
       const dot = kind === 'none' ? '<i class="st-dot is-none" aria-hidden="true"></i>'
         : `<i class="st-dot is-${kind}" role="img" aria-label="${esc(text)}" title="${esc(text)}">${kind === 'busy' ? '<span class="spin" aria-hidden="true"></span>' : ''}</i>`;
       const status = text ? `<span class="vh" role="status">${esc(text)}</span>` : '';
@@ -149,7 +151,7 @@
       : `<div class="row"><p>No devices yet. Add the Tuya devices you want to change.</p></div>`;
     // T-029 (owner): Refresh (icon only) and Add Device… sit on the Devices heading's line, top right; a load error keeps
     // its own line under the list.
-    const busy = s.add === 'loading';
+    const busy = s.add === 'loading' || !!s.refreshing; // T-030: ↻ spins while the list loads
     const refresh = `<button type="button" class="icon-btn${busy ? ' is-busy' : ''}" data-k="refresh-devices" data-action="refresh-devices" aria-label="Refresh device list" title="Refresh device list"${busy ? ' aria-disabled="true" aria-busy="true"' : ''}>${REFRESH}</button>`;
     return `<div class="h2row"><h2 id="devices-h">Devices</h2><div class="acts" role="group" aria-labelledby="devices-h">${refresh}${add}</div></div><section class="grp devices">${head}`
       + (s.addErr ? `<div class="row"><span class="err" role="alert">${esc(s.addErr)}</span></div>` : '') + `</section>`

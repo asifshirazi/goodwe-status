@@ -241,15 +241,12 @@ pub fn refresh(app: &AppHandle) {
     }
 }
 
-/// Reads the login item, sets the title and, on Automation, refreshes the device list.
+/// Reads the login item and sets the title. The device list is fetched at launch and on ↻ only (T-030, owner).
 fn show_pane(app: &AppHandle, pane: &str) {
     let (on, _) = login_state(&login_item(app), None);
     app.state::<Settings>().open_at_login.store(on, Ordering::SeqCst);
     if let Some(w) = app.get_webview_window(WIN) {
         let _ = w.set_title(title(pane));
-    }
-    if pane == "automation" {
-        app.state::<Arc<Automation>>().refresh_devices();
     }
 }
 

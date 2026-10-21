@@ -114,7 +114,10 @@ struct Run {
     cancelled: Option<(Action, LocalTs, Which)>,
     /// A command in flight.
     setting: Option<Action>,
-    offline: bool,
+    /// Tuya's online flag, from the device list or a command's result (None: not known yet).
+    online: Option<bool>,
+    /// The last device list didn't have it (removed from the Tuya account); its rules stay saved.
+    missing: bool,
     last: Option<Last>,
     /// Bumped by every new change: an older one's result is dropped.
     gen: u64,
@@ -137,6 +140,8 @@ struct State {
     connect_err: Option<String>,
     /// The form's Access ID and data center from the last Connect attempt (never the Secret).
     form: Option<(String, String)>,
+    /// A device list fetch in flight (the ↻ button's busy state).
+    refreshing: bool,
     /// One delay second (tests shorten it).
     second: Duration,
 }
@@ -260,6 +265,8 @@ pub struct View {
     pub tuya: TuyaView,
     pub devices: Vec<DeviceView>,
     pub add: AddView,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub refreshing: bool,
     #[serde(rename = "addErr", skip_serializing_if = "Option::is_none")]
     pub add_err: Option<String>,
 }
@@ -308,6 +315,12 @@ pub struct DeviceView {
     pub loading: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub offline: bool,
+    /// Online in Tuya (known from the list or a command).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub online: bool,
+    /// Not in the Tuya account's device list any more.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub missing: bool,
     /// "Setting Music…" (in flight, spinner).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub setting: Option<String>,
@@ -340,7 +353,7 @@ pub struct AddItem {
     pub offline: bool,
 }
 
-/// The status line under a device, first match wins: in flight, waiting, offline, last result.
+/// The status line under a device, first match wins: in flight, waiting, offline, not in Tuya, last result (+ online).
 /// `choices` are the device's, for the labels.
 fn status(run: Option<&Run>, choices: &[Action]) -> Status {
     let lbl = |a: &Action| tuya::choice_label(choices, a);
@@ -356,14 +369,17 @@ fn status(run: Option<&Run>, choices: &[Action]) -> Status {
         }
         return Status { waiting: Some(w), ..Status::default() };
     }
-    if r.offline {
+    if r.online == Some(false) {
         return Status { offline: true, ..Status::default() };
+    }
+    if r.missing {
+        return Status { missing: true, ..Status::default() };
     }
     let last = r.last.as_ref().map(|l| match &l.err {
         Some(why) => LastView { text: format!("Couldn’t set {} at {}: {why}", lbl(&l.action), l.at.hhmm12()), failed: true },
         None => LastView { text: format!("Set to {} at {}", lbl(&l.action), l.at.hhmm12()), failed: false },
     });
-    Status { last, ..Status::default() }
+    Status { last, online: r.online == Some(true), ..Status::default() }
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -371,6 +387,8 @@ struct Status {
     setting: Option<String>,
     waiting: Option<String>,
     offline: bool,
+    online: bool,
+    missing: bool,
     last: Option<LastView>,
 }
 
@@ -407,6 +425,7 @@ impl Automation {
                 connect_err: None,
                 form: None,
                 second: Duration::from_secs(1),
+                refreshing: false,
             }),
             hooks,
             path,
@@ -421,10 +440,16 @@ impl Automation {
         }
     }
 
-    /// The keys from the Keychain at launch (None: never connected, or access denied).
-    pub fn set_keys(&self, keys: Option<Keys>) {
+    /// The keys from the Keychain at launch (None: never connected, or access denied), then the one launch fetch
+    /// of the device list (owner, T-030: later only ↻ fetches; opening Settings shows the last list).
+    pub fn set_keys(self: &Arc<Self>, keys: Option<Keys>) {
         let client = keys.as_ref().and_then(Client::new).map(Arc::new);
+        self.launch_with(keys, client);
+    }
+
+    fn launch_with(self: &Arc<Self>, keys: Option<Keys>, client: Option<Arc<Client>>) {
         self.set_client(keys, client);
+        self.refresh_devices(); // not connected: a quiet no-op
     }
 
     fn set_client(&self, keys: Option<Keys>, client: Option<Arc<Client>>) {
@@ -565,14 +590,14 @@ impl Automation {
             run.task = None;
             let new_problem = match &r {
                 Ok(()) => {
-                    run.offline = false;
+                    run.online = Some(true);
                     run.last = Some(Last { action, at, err: None });
                     // A call went through: a plan-expired note is out of date.
                     problem.filter(|p| *p != Problem::PlanExpired)
                 }
                 Err(e) => {
                     if e.code() == Some(2001) {
-                        run.offline = true;
+                        run.online = Some(false);
                     }
                     run.last = Some(Last { action, at, err: Some(e.reason()) });
                     if e.keys_refused() {
@@ -685,7 +710,7 @@ impl Automation {
                         Some((off, on)) => {
                             let action = now.map(|n| if n.which == Which::Off { off.clone() } else { on.clone() });
                             st.store.devices.push(Device { id: dev.id.clone(), name: dev.name.clone(), choices, off, on, delay_s: 0, enabled: true });
-                            st.run.entry(dev.id.clone()).or_default().offline = !dev.online;
+                            st.run.entry(dev.id.clone()).or_default().online = Some(dev.online);
                             me.save(&st);
                             if let (Some(n), Some(a), true) = (now, action, st.runs()) {
                                 me.send(&mut st, &dev.id, a, n.at, 0, None);
@@ -714,28 +739,66 @@ impl Automation {
         }
     }
 
-    /// The device list (Automation pane shown): Add Device… items, saved names, online flags.
+    /// The device list (once at launch, then on ↻): Add Device… items, saved names, online flags.
+    /// Live every time (no cache); never switches a device. One fetch at a time (B-Y3).
     pub fn refresh_devices(self: &Arc<Self>) {
-        let Some(client) = self.st.lock().unwrap().client.clone() else { return };
+        let client = {
+            let mut st = self.st.lock().unwrap();
+            if st.refreshing {
+                return;
+            }
+            match st.client.clone() {
+                Some(c) => {
+                    st.refreshing = true;
+                    c
+                }
+                None => {
+                    // Keys saved but no client (a data center this build doesn't know): say so; not connected: nothing to do.
+                    if st.keys.is_none() {
+                        return;
+                    }
+                    st.devices = Devices::Failed;
+                    drop(st);
+                    (self.hooks.log)("FAIL tuya/devices · no client for the saved data center · action: Settings shows the device list as failed");
+                    (self.hooks.changed)();
+                    return;
+                }
+            }
+        };
+        (self.hooks.changed)();
         let me = self.clone();
         async_runtime::spawn(async move {
+            let t0 = std::time::Instant::now();
             let r = client.devices().await;
             {
                 let mut st = me.st.lock().unwrap();
+                st.refreshing = false;
                 match r {
                     Ok(devs) => {
                         let mut renamed = false;
                         let st = &mut *st;
-                        for d in &devs {
-                            if let Some(l) = st.store.devices.iter_mut().find(|l| l.id == d.id) {
-                                renamed |= l.name != d.name;
-                                l.name = d.name.clone();
-                                st.run.entry(d.id.clone()).or_default().offline = !d.online;
+                        for l in st.store.devices.iter_mut() {
+                            let run = st.run.entry(l.id.clone()).or_default();
+                            let Some(d) = devs.iter().find(|d| d.id == l.id) else {
+                                // Gone from the account: marked, its rules kept (never deleted silently).
+                                run.missing = true;
+                                run.online = None;
+                                continue;
+                            };
+                            renamed |= l.name != d.name;
+                            l.name = d.name.clone();
+                            run.missing = false;
+                            run.online = Some(d.online);
+                            // Owner: a failure older than this online answer no longer colours the dot.
+                            if d.online && run.last.as_ref().is_some_and(|l| l.err.is_some()) {
+                                run.last = None;
                             }
                         }
                         if renamed {
                             me.save(st);
                         }
+                        let on = devs.iter().filter(|d| d.online).count();
+                        (me.hooks.log)(&format!("tuya:devices: ok ({} devices, {on} online, {:.1} s)", devs.len(), t0.elapsed().as_secs_f32()));
                         st.devices = Devices::Ok(devs);
                         if st.problem == Some(Problem::PlanExpired) {
                             st.problem = None;
@@ -878,7 +941,7 @@ impl Automation {
             .devices
             .iter()
             .map(|d| {
-                let Status { setting, waiting, offline, last } = status(st.run.get(&d.id), &d.choices);
+                let Status { setting, waiting, offline, online, missing, last } = status(st.run.get(&d.id), &d.choices);
                 let pos = |a: &Action| d.choices.iter().position(|c| c == a).unwrap_or(0);
                 DeviceView {
                     name: d.name.clone(),
@@ -890,6 +953,8 @@ impl Automation {
                     setting,
                     waiting,
                     offline,
+                    online,
+                    missing,
                     last,
                     ..DeviceView::default()
                 }
@@ -901,7 +966,7 @@ impl Automation {
             (Devices::Loading, _) => AddView::Status("loading"),
             (Devices::Ok(_), _) => AddView::Items(st.addable().iter().map(|d| AddItem { name: d.name.clone(), offline: !d.online }).collect()),
         };
-        View { automation: AutoView { disabled, hint }, tuya, devices, add, add_err: st.add_err.clone() }
+        View { automation: AutoView { disabled, hint }, tuya, devices, add, refreshing: st.refreshing, add_err: st.add_err.clone() }
     }
 }
 
@@ -912,7 +977,7 @@ mod tests {
     use crate::sems::{GridSignal, Reading};
     use crate::tuya::stub::{self, fail, ok, token, Log};
     use serde_json::json;
-    use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 
     const AT: &str = "2026-10-18 09:52:00";
     const GRID_ON: i64 = -2;
@@ -1309,6 +1374,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_shows_fresh_online_names_and_missing() {
+        // T-030: dev-a saved with a stale 2001 failure; each ↻ is one live GET of the list, no command.
+        let phase = Arc::new(AtomicUsize::new(0));
+        let p2 = phase.clone();
+        let t = setup(vec![light("dev-a", "Table LED"), light("dev-c", "Porch")], true, move |r, _| {
+            if r.path.starts_with("/v1.0/token") {
+                return (0, token("t"));
+            }
+            let list = match p2.load(Ordering::SeqCst) {
+                0 => r#"[{"id":"dev-a","name":"Table LED","category":"dd","online":true},{"id":"dev-c","name":"Porch","category":"dd","online":true}]"#,
+                1 => r#"[{"id":"dev-a","name":"Desk LED","category":"dd","online":false},{"id":"dev-n","name":"New Plug","category":"cz","online":true}]"#,
+                _ => r#"[{"id":"dev-a","name":"Desk LED","category":"dd","online":true},{"id":"dev-c","name":"Porch","category":"dd","online":true}]"#,
+            };
+            (150, ok(&format!(r#"{{"devices":{list},"has_more":false}}"#)))
+        })
+        .await;
+        {
+            let mut st = t.auto.st.lock().unwrap();
+            let at = LocalTs::parse(AT).unwrap();
+            let run = st.run.entry("dev-a".into()).or_default();
+            run.online = Some(false);
+            run.last = Some(Last { action: act("switch_led", json!(true)), at, err: Some("the device is offline".into()) });
+        }
+        assert!(t.auto.view(true).devices[0].offline);
+        let refresh = || async {
+            t.auto.refresh_devices();
+            assert!(t.auto.view(true).refreshing, "busy while the list loads");
+            for _ in 0..300 {
+                if !t.auto.view(true).refreshing {
+                    return t.auto.view(true);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("refresh never finished");
+        };
+        // Online now: the stale failure is gone, the dot is green.
+        let v = refresh().await;
+        let d = &v.devices[0];
+        assert!(d.online && !d.offline && d.last.is_none() && !d.missing, "{d:?}");
+        // Renamed, offline, Porch gone from the account, a new plug in Add Device….
+        phase.store(1, Ordering::SeqCst);
+        let v = refresh().await;
+        assert_eq!((v.devices[0].name.as_str(), v.devices[0].offline), ("Desk LED", true));
+        assert_eq!(v.devices.len(), 2, "a device gone from Tuya keeps its saved rules");
+        assert!(v.devices[1].missing && !v.devices[1].online && v.devices[1].name == "Porch");
+        assert_eq!(v.add, AddView::Items(vec![AddItem { name: "New Plug".into(), offline: false }]));
+        assert_eq!(t.auto.st.lock().unwrap().store.devices[0].name, "Desk LED", "the new name is saved");
+        // Back in the account and online.
+        phase.store(2, Ordering::SeqCst);
+        let v = refresh().await;
+        assert!(v.devices.iter().all(|d| d.online && !d.missing && !d.offline));
+        let reqs = t.log.lock().unwrap();
+        assert_eq!(reqs.iter().filter(|r| r.method == "GET" && r.path.contains("associated-users")).count(), 3, "one GET per refresh");
+        assert!(reqs.iter().all(|r| r.method != "POST"), "a refresh switches nothing");
+        drop(reqs);
+        assert_eq!(t.lines.lock().unwrap().iter().filter(|l| l.starts_with("tuya:devices: ok")).count(), 3);
+        // Counts only: never a device name or id in the log.
+        assert!(t.lines.lock().unwrap().iter().all(|l| !l.contains("dev-") && !l.contains("LED") && !l.contains("Porch")));
+    }
+
+    #[tokio::test]
+    async fn device_list_fetched_at_launch_and_on_refresh_only() {
+        // T-030 (owner): one GET at launch, none when Settings opens or switches panes, one per ↻ (never two at once).
+        let t = setup(vec![light("dev-a", "Table LED")], true, |r, _| {
+            (if r.path.starts_with("/v1.0/token") { 0 } else { 150 }, if r.path.starts_with("/v1.0/token") { token("t") } else { ok(r#"{"devices":[{"id":"dev-a","name":"Table LED","category":"dd","online":true}],"has_more":false}"#) })
+        })
+        .await;
+        let gets = || t.log.lock().unwrap().iter().filter(|r| r.path.contains("associated-users")).count();
+        let done = || async {
+            for _ in 0..300 {
+                if !t.auto.view(true).refreshing {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("refresh never finished");
+        };
+        let client = t.auto.st.lock().unwrap().client.clone();
+        t.auto.launch_with(Some(keys()), client);
+        done().await;
+        assert_eq!(gets(), 1, "one fetch at launch");
+        assert!(t.auto.view(true).devices[0].online);
+        // Settings opens, switches panes: it reads the last list only.
+        for p in ["automation", "general", "automation", "stats"] {
+            t.auto.set_pane(p);
+            let _ = t.auto.view(true);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(gets(), 1, "no fetch on Settings open or pane switch");
+        // ↻ twice while the first runs: one fetch, and busy until it returns.
+        t.auto.refresh_devices();
+        t.auto.refresh_devices();
+        assert!(t.auto.view(true).refreshing);
+        done().await;
+        assert_eq!(gets(), 2, "one fetch per ↻, never two at once");
+        t.auto.refresh_devices();
+        done().await;
+        assert_eq!(gets(), 3);
+        // Not connected at launch: quiet, no call.
+        let n = t.lines.lock().unwrap().len();
+        t.auto.launch_with(None, None);
+        assert!(!t.auto.view(true).refreshing);
+        assert_eq!((gets(), t.lines.lock().unwrap().len()), (3, n));
+    }
+
+    #[tokio::test]
+    async fn refresh_failure_shows_failed_and_logs_once() {
+        let t = setup(vec![light("dev-a", "Table LED")], true, |r, _| (0, if r.path.starts_with("/v1.0/token") { token("t") } else { fail(1004) })).await;
+        t.auto.refresh_devices();
+        for _ in 0..300 {
+            if !t.auto.view(true).refreshing {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(t.auto.view(true).add, AddView::Status("failed"));
+        let lines = t.lines.lock().unwrap().clone();
+        assert_eq!(lines.iter().filter(|l| l.starts_with("FAIL tuya/devices")).count(), 1, "{lines:?}");
+        // Keys saved, no client: the same failed state and one line, no call.
+        t.auto.set_client(Some(keys()), None);
+        t.auto.refresh_devices();
+        assert!(!t.auto.view(true).refreshing);
+        assert_eq!(t.auto.view(true).add, AddView::Status("failed"));
+        assert!(t.lines.lock().unwrap().last().unwrap().starts_with("FAIL tuya/devices · no client"));
+    }
+
+    #[tokio::test]
     async fn add_while_grid_on_sets_its_grid_on_action() {
         // T-021: adding acts at once in both grid states.
         let t = setup(vec![], true, tuya(|_| (0, ok("true")))).await;
@@ -1429,14 +1621,14 @@ mod tests {
         let at = LocalTs::parse("2026-10-18 21:05:00").unwrap();
         let music = || act("work_mode", json!("music"));
         let modes: Vec<Action> = ["white", "colour", "scene", "music", "scene_2"].map(|m| act("work_mode", json!(m))).into();
-        let mk = |setting: Option<Action>, offline, last: Option<Last>| Run { setting, offline, last, ..Run::default() };
+        let mk = |setting: Option<Action>, offline: bool, last: Option<Last>| Run { setting, online: offline.then_some(false), last, ..Run::default() };
         let ok_last = || Some(Last { action: music(), at, err: None });
         let failed = |why: &str| Some(Last { action: act("work_mode", json!("scene_2")), at, err: Some(why.into()) });
         let st = |r: &Run| status(Some(r), &modes);
         // In flight wins over all, then waiting, then offline, then the last result; else nothing.
         assert_eq!(st(&mk(Some(music()), true, ok_last())), Status { setting: Some("Setting Music…".into()), ..Status::default() });
         let fan = [act("switch_fan", json!(true)), act("switch_fan", json!(false))];
-        let waiting = Run { waiting: Some((fan[0].clone(), at)), offline: true, ..Run::default() };
+        let waiting = Run { waiting: Some((fan[0].clone(), at)), online: Some(false), ..Run::default() };
         assert_eq!(status(Some(&waiting), &fan), Status { waiting: Some("Will set to On at 9:05\u{a0}PM".into()), ..Status::default() });
         assert_eq!(st(&mk(None, true, failed("offline"))), Status { offline: true, ..Status::default() });
         assert_eq!(st(&mk(None, false, ok_last())).last.unwrap().text, "Set to Music at 9:05\u{a0}PM");
@@ -1446,6 +1638,10 @@ mod tests {
         assert_eq!(status(Some(&fan_off), &fan).last.unwrap().text, "Set to Off at 9:05\u{a0}PM");
         assert_eq!(status(None, &fan), Status::default());
         assert_eq!(status(Some(&Run::default()), &fan), Status::default());
+        // T-030: known online shows with (or without) a last result; a device gone from the list is marked.
+        assert_eq!(status(Some(&Run { online: Some(true), ..Run::default() }), &fan), Status { online: true, ..Status::default() });
+        assert!(status(Some(&Run { online: Some(true), last: ok_last(), ..Run::default() }), &modes).online);
+        assert_eq!(status(Some(&Run { missing: true, last: ok_last(), ..Run::default() }), &modes), Status { missing: true, ..Status::default() });
         // The reasons table.
         let reasons = [
             (TuyaError::Code(2001), "offline"),
@@ -1648,8 +1844,8 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         t.auto.add(0);
-        let lines = lines_after(&t, 1).await;
-        assert_eq!(lines, ["FAIL tuya/choices (Add Device) · code 1199 (Tuya was busy), after one retry · action: device not added, Settings shows why"]);
+        let lines = lines_after(&t, 2).await;
+        assert_eq!(lines, ["tuya:devices: ok (1 devices, 1 online, 0.0 s)".to_owned(), "FAIL tuya/choices (Add Device) · code 1199 (Tuya was busy), after one retry · action: device not added, Settings shows why".to_owned()]);
         no_secret(&lines);
     }
 
