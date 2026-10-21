@@ -33,12 +33,22 @@
     }
     if (s.refreshing && !(was && was.refreshing)) busySince = Date.now();
     invoke('panel_height', { h: root.firstElementChild.getBoundingClientRect().height });
+    flush();
   }
 
   // T-029: the opening motion, only when the panel window is shown (Rust sends this right after the state). Off with
   // Settings › Reduce motion; animateOpen also skips it when macOS asks for reduced motion.
   // Registered before 'state': the done/ stage pages' bridge stub keeps only the last listener.
   listen('panel-opened', () => GW.animateOpen(root, { reduce: !!(state && state.reduceMotion) }));
+  // T-032: a refresh that worked replays it, once, after the new data is drawn. The "done" render can be held up to
+  // SPIN_MS (below), and render replaces the DOM, so the event only marks it and the next done render plays it.
+  let replay = false;
+  function flush() {
+    if (!replay || (state && state.refreshing)) return;
+    replay = false;
+    GW.animateOpen(root, { reduce: !!(state && state.reduceMotion) });
+  }
+  listen('panel-refreshed', () => { replay = true; flush(); });
 
   listen('state', e => {
     clearTimeout(held);

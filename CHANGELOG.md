@@ -6,6 +6,7 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ### Changed
 - Your Tuya devices load once when the app starts, and then only when you click ↻ in Settings › Automation. Opening Settings or switching tabs no longer contacts Tuya.
+- After you press ↻ or ⌘R in the panel and the new data arrives, the panel replays its opening motion once, so you can see it refreshed. Background updates stay still, and Reduce motion turns it off.
 - Settings › Automation's intro line is reworded ("When the grid goes off or comes back, each device that's on switches after its delay.") and always keeps two lines of space, so the device list no longer jumps when you turn a device on or off.
 
 ### Fixed

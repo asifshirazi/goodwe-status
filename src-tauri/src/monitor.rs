@@ -717,6 +717,8 @@ pub struct PollReport {
     pub notes: Vec<String>,
     /// The battery % when it reached a low battery level while the grid is off (T-008).
     pub low_battery: Option<f64>,
+    /// A user refresh (↻ / ⌘R) whose reading and today's day both worked: the panel replays its opening motion (T-032).
+    pub refreshed: bool,
 }
 
 /// One poll. The reading's part of the report (grid notice, low battery, disagreement) goes to
@@ -983,6 +985,7 @@ pub async fn run<S: Source>(
         // Before the report, whose redraw then shows the spin stopped.
         {
             let mut m = mon.lock().unwrap();
+            rep.refreshed = m.user_poll && m.signed_in && m.failures == 0 && rep.fails.is_empty();
             (m.polling, m.user_poll) = (false, false);
             rep.notes = m.stale_notes(Instant::now());
         }
@@ -1919,6 +1922,48 @@ mod tests {
         assert_eq!(m.ask_refresh(), Some(false), "a timer poll runs: it becomes the user's, no second poll");
         assert!(m.user_poll);
         assert_eq!(Monitor::new(false).ask_refresh(), None, "signed out: Refresh is disabled");
+    }
+
+    /// Polls once at start, then once on a user refresh (pressed twice); every report's `refreshed`.
+    async fn refresh_flags(readings: Vec<Result<Reading, SemsError>>, charts: Vec<Result<ChartSeries, SemsError>>) -> (Vec<bool>, Vec<bool>) {
+        let (src, _) = fake(readings, charts);
+        let mon = Arc::new(Mutex::new(Monitor::new(true)));
+        let seen = Arc::new(Mutex::new(vec![]));
+        let (tx, rx) = mpsc::channel(4);
+        let s = seen.clone();
+        let task = tokio::spawn(run(src, mon.clone(), rx, move |r| s.lock().unwrap().push(r.refreshed)));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let start = std::mem::take(&mut *seen.lock().unwrap());
+        assert_eq!(mon.lock().unwrap().ask_refresh(), Some(true));
+        assert_eq!(mon.lock().unwrap().ask_refresh(), None, "a second press while it runs: no second poll");
+        tx.send(()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(!mon.lock().unwrap().user_poll);
+        drop(tx);
+        task.await.unwrap();
+        let after = seen.lock().unwrap().clone();
+        (start, after)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn user_refresh_that_works_is_flagged_once() {
+        let ok = |t| Ok(reading(t, GridSignal::Off, 80.0, 900.0));
+        let chart = || Ok(ChartSeries { day: day_of("10/18/2026 00:00:00"), points: vec![(600, 90.0, 0.9)] });
+        let (start, after) = refresh_flags(vec![ok("10/18/2026 11:22:00"), ok("10/18/2026 11:24:00")], vec![chart(), chart()]).await;
+        assert!(start.iter().all(|r| !r), "the start-up (timer) poll is never a refresh: {start:?}");
+        assert_eq!(after, [false, true], "the live part is silent, the final report flags it, once");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_user_refresh_is_not_flagged() {
+        let ok = Ok(reading("10/18/2026 11:22:00", GridSignal::Off, 80.0, 900.0));
+        let chart = || Ok(ChartSeries { day: day_of("10/18/2026 00:00:00"), points: vec![(600, 90.0, 0.9)] });
+        let (_, after) = refresh_flags(vec![ok, Err(SemsError::Network("down".into()))], vec![chart()]).await;
+        assert!(after.iter().all(|r| !r), "the reading failed: {after:?}");
+        let ok = |t| Ok(reading(t, GridSignal::Off, 80.0, 900.0));
+        // The refresh's reading works but today's day call fails (no second chart).
+        let (_, after) = refresh_flags(vec![ok("10/18/2026 11:22:00"), ok("10/18/2026 11:24:00")], vec![chart()]).await;
+        assert!(after.iter().all(|r| !r), "today's day failed: {after:?}");
     }
 
     #[tokio::test]

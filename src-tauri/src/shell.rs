@@ -81,7 +81,7 @@ fn toggle(app: &AppHandle, rect: Rect) {
     let _ = win.show();
     let _ = win.set_focus();
     refresh(app);
-    // T-029: after the state, so the opening motion plays on the fresh render (never on polls or refreshes).
+    // T-029: after the state, so the opening motion plays on the fresh render (never on timer polls; a refresh sends `panel-refreshed`).
     let _ = app.emit_to(PANEL, "panel-opened", ());
     check_notifications(app);
 }
@@ -201,6 +201,10 @@ pub fn after_poll(app: &AppHandle, rep: PollReport) {
         alert(dir, crate::rules::low_battery_text(soc));
     }
     refresh(app);
+    // After the state, as `panel-opened`: the panel replays its opening motion once the new data is drawn (T-032).
+    if rep.refreshed {
+        let _ = app.emit_to(PANEL, "panel-refreshed", ());
+    }
     check_notifications(app);
 }
 
