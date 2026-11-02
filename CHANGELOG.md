@@ -4,8 +4,13 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-03
+
 ### Added
 - While the battery charges, a green dot pulses before "Charging" in the panel, and the line under the battery shows about how long until it is full (for example "~1h 10m to full at 3.8 kW"). The dot stays still with Reduce motion on, or while the data is old.
+
+### Fixed
+- When SEMS's live reading freezes (the same grid state and battery values poll after poll) while the chart keeps updating, the battery %, the Charging or Idle line and the grid status now follow the chart's newest minute.
 
 ## [0.2.2] - 2026-10-21
 
