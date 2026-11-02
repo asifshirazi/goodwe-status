@@ -70,6 +70,8 @@ const DAYS_PER_POLL: usize = 3;
 /// S7a: the On reading before the first Off one must be this close for an exact "Since 7:42 AM"
 /// (an On reading hours older, e.g. the Mac slept, doesn't show when the cut began).
 const SEEN_LIVE_MAX_GAP_S: i64 = 600;
+/// A chart point older than this (minutes before the reading) can't correct a frozen live reading.
+const PLUS_FRESH_MIN: u32 = 6;
 /// D-O11: a day inside the history range that SEMS answers empty on this many launches is kept as "no data".
 const EMPTY_LAUNCHES: u8 = 3;
 /// Temperature readings older than this can't give a trend (the Mac slept): T-015 § 1.
@@ -172,6 +174,10 @@ pub struct Monitor {
     pub grid: GridState,
     pub off_since: Option<OffSince>,
     pub last: Option<Reading>,
+    /// The newest reading as SEMS sent it (`last` may be corrected from the chart), and whether its
+    /// grid and battery values equal the one before: a frozen inverter block (`on_plus`).
+    raw: Option<Reading>,
+    frozen: bool,
     /// App-clock moment `last.time` was first seen.
     seen_at: Option<Instant>,
     pub failures: u32,
@@ -245,6 +251,8 @@ impl Monitor {
             grid: GridState::Unknown,
             off_since: None,
             last: None,
+            raw: None,
+            frozen: false,
             seen_at: None,
             failures: 0,
             first_reading: None,
@@ -430,20 +438,13 @@ impl Monitor {
         }
         self.seen_at = Some(now);
         self.first_reading.get_or_insert(r.time);
+        self.frozen = self.raw.as_ref().is_some_and(|p| (p.vac1, &p.grid_status, &p.battery) == (r.vac1, &r.grid_status, &r.battery));
+        self.raw = Some(r.clone());
 
         let prev = self.grid;
         let next = rules::next_grid(prev, r.grid);
-        // A new outage, or the grid back: forget the history start (it belongs to "this outage").
-        match next {
-            GridState::Off if prev != GridState::Off => {
-                let seen = prev == GridState::On && self.last.as_ref().is_some_and(|l| r.time.0 - l.time.0 <= SEEN_LIVE_MAX_GAP_S);
-                self.off_since = Some(OffSince { at: r.time, exact: seen });
-                self.since_start = None;
-            }
-            GridState::On => (self.off_since, self.since_start) = (None, None),
-            _ => {}
-        }
-        self.grid = next;
+        let seen = prev == GridState::On && self.last.as_ref().is_some_and(|l| r.time.0 - l.time.0 <= SEEN_LIVE_MAX_GAP_S);
+        self.set_grid(next, r.time, seen);
 
         if let Some(b) = &r.battery {
             self.own.retain(|p| p.0.day() == r.time.day());
@@ -464,6 +465,47 @@ impl Monitor {
         let notice = rules::grid_changed(prev, next).then(|| Notice { grid: next, soc: r.battery.as_ref().map(|b| b.soc) });
         self.last = Some(r);
         notice
+    }
+
+    /// A new outage, or the grid back: forget the history start (it belongs to "this outage").
+    fn set_grid(&mut self, next: GridState, at: LocalTs, seen: bool) {
+        match next {
+            GridState::Off if self.grid != GridState::Off => {
+                self.off_since = Some(OffSince { at, exact: seen });
+                self.since_start = None;
+            }
+            GridState::On => (self.off_since, self.since_start) = (None, None),
+            _ => {}
+        }
+        self.grid = next;
+    }
+
+    /// SEMS's live reading can freeze (all values the same poll after poll, 2026-11-03: grid off,
+    /// 0 W, a battery % that no longer moves) while the SEMS+ chart goes on. When the live values
+    /// didn't change and today's newest chart minute, close to the reading, says otherwise, the chart
+    /// wins: battery %, battery power and the grid (an off minute, `parse_grid_day`'s rule).
+    /// Returns the notice if that moves the grid.
+    pub fn on_plus(&mut self, chart: &ChartSeries, grid: &GridDay) -> Option<Notice> {
+        let (Some(last), true) = (self.last.as_mut(), self.frozen) else { return None };
+        let b = last.battery.as_mut()?;
+        let &(m, soc, kw) = chart.points.last()?;
+        if chart.day != last.time.day() || last.time.minute_of_day().saturating_sub(m) > PLUS_FRESH_MIN {
+            return None;
+        }
+        let off = (grid.newest == Some(m)).then(|| grid.off.iter().any(|&(x, _)| x == m));
+        let (watts, was_off) = (kw * 1000.0, self.grid == GridState::Off);
+        if (soc - b.soc).abs() < 1.0 && (watts - b.watts).abs() < 300.0 && off.is_none_or(|o| o == was_off) {
+            return None;
+        }
+        (b.soc, b.watts) = (soc, watts);
+        let (at, prev) = (last.time, self.grid);
+        let next = match off {
+            Some(true) => GridState::Off,
+            Some(false) => GridState::On,
+            None => prev,
+        };
+        self.set_grid(next, at, false);
+        rules::grid_changed(prev, next).then_some(Notice { grid: next, soc: Some(soc) })
     }
 
     pub fn on_failure(&mut self) {
@@ -792,6 +834,9 @@ pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monit
         };
         let todo = {
             let Some(mut m) = current() else { return rep };
+            if let (Some(c), Some(g)) = (&chart, &grid) {
+                rep.notice = rep.notice.or(m.on_plus(c, g));
+            }
             m.on_chart(chart);
             if let Some(g) = grid {
                 m.on_day(today.day(), g, now);
@@ -1016,6 +1061,28 @@ mod tests {
             battery_c: None,
             created: LocalTs::parse("09/18/2026 18:28:53"),
         }
+    }
+
+    #[test]
+    fn frozen_reading_is_corrected_from_the_chart() {
+        let t0 = Instant::now();
+        let mut m = Monitor::new(true);
+        let day = LocalTs::parse("11/03/2026 00:00:00").unwrap().day();
+        let chart = |soc, kw| ChartSeries { day, points: vec![(50, soc, kw), (52, 98.0, -1.6)] };
+        let on = GridDay { newest: Some(52), ..GridDay::default() };
+        let frozen = |t: &str| reading(&format!("11/03/2026 {t}"), GridSignal::Off, 92.0, 0.0);
+        m.on_reading(frozen("00:48:30"), t0);
+        assert_eq!(m.on_plus(&chart(92.0, 0.0), &on), None, "first reading: nothing to compare with");
+        m.on_reading(frozen("00:59:30"), t0);
+        assert_eq!(m.on_plus(&chart(92.0, 0.0), &on), None, "newest chart minute 7 min behind: not fresh");
+        m.on_reading(frozen("00:55:30"), t0);
+        let n = m.on_plus(&chart(92.0, 0.0), &on).unwrap();
+        assert_eq!((n.grid, n.soc, m.grid), (GridState::On, Some(98.0), GridState::On));
+        let b = m.last.as_ref().unwrap().battery.clone().unwrap();
+        assert_eq!((b.soc, b.watts), (98.0, -1600.0));
+        // a live reading that moved is never overruled by the chart
+        m.on_reading(reading("11/03/2026 00:55:30", GridSignal::Off, 90.0, 900.0), t0);
+        assert_eq!(m.on_plus(&chart(92.0, 0.0), &on), None);
     }
 
     #[test]
