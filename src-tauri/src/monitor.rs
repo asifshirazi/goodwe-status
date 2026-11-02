@@ -438,8 +438,19 @@ impl Monitor {
         }
         self.seen_at = Some(now);
         self.first_reading.get_or_insert(r.time);
-        self.frozen = self.raw.as_ref().is_some_and(|p| (p.vac1, &p.grid_status, &p.battery) == (r.vac1, &r.grid_status, &r.battery));
+        self.frozen = self.raw.as_ref().is_some_and(|p| (p.grid, p.vac1, &p.grid_status, &p.battery) == (r.grid, r.vac1, &r.grid_status, &r.battery));
         self.raw = Some(r.clone());
+        // A frozen reading says nothing new: keep the state and the battery as they are (the chart's
+        // correction, `on_plus`), or every poll would flip the grid to the frozen value and back.
+        let mut r = r;
+        if let (true, Some(l)) = (self.frozen, &self.last) {
+            r.battery = l.battery.clone();
+            r.grid = match self.grid {
+                GridState::Off => GridSignal::Off,
+                GridState::On => GridSignal::On,
+                GridState::Unknown => r.grid,
+            };
+        }
 
         let prev = self.grid;
         let next = rules::next_grid(prev, r.grid);
@@ -1080,6 +1091,11 @@ mod tests {
         assert_eq!((n.grid, n.soc, m.grid), (GridState::On, Some(98.0), GridState::On));
         let b = m.last.as_ref().unwrap().battery.clone().unwrap();
         assert_eq!((b.soc, b.watts), (98.0, -1600.0));
+        // the same frozen reading again, 2 minutes later: no flip back, no second notice
+        let before = m.last.as_ref().unwrap().battery.clone();
+        assert_eq!(m.on_reading(frozen("00:57:30"), t0), None);
+        assert_eq!((m.grid, m.last.as_ref().unwrap().battery.clone()), (GridState::On, before));
+        assert_eq!(m.on_plus(&chart(98.0, -1.6), &on), None);
         // a live reading that moved is never overruled by the chart
         m.on_reading(reading("11/03/2026 00:55:30", GridSignal::Off, 90.0, 900.0), t0);
         assert_eq!(m.on_plus(&chart(92.0, 0.0), &on), None);
