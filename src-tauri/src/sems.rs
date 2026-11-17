@@ -34,6 +34,9 @@ const OFF_BALANCE_KW: f64 = 0.02;
 const LOADED_KW: f64 = 0.05;
 /// More missing minutes in a row than this are a gap (the outage merge gap, T-015 § 4.4).
 const GAP_MIN: u32 = 5;
+/// A classic call that takes longer than this counts as unreachable (it answers in about a second;
+/// 2026-11-17 hk.semsportal.com often didn't answer at all).
+const CLASSIC_TIMEOUT: Duration = Duration::from_secs(8);
 
 // ---------- what the rest of the app sees ----------
 
@@ -200,6 +203,38 @@ pub fn parse_reading(v: &Value) -> Result<Reading, String> {
         battery_c,
         created: info["create_time"].as_str().and_then(LocalTs::parse),
     })
+}
+
+/// The newest chart minute as a `Reading`: battery % and kW, and the grid from that minute's off rule.
+/// `cached` (the last classic reading) lends the set-up day and battery size. `None`: no point yet.
+pub fn reading_from_chart(chart: &ChartSeries, grid: &GridDay, cached: Option<&Reading>, offset_h: f64) -> Option<Reading> {
+    let &(m, soc, kw) = chart.points.last()?;
+    let off = grid.off.iter().any(|&(x, _)| x == m);
+    Some(Reading {
+        time: LocalTs(chart.day * 86_400 + i64::from(m) * 60),
+        grid: if off { GridSignal::Off } else { GridSignal::On },
+        vac1: 0.0, // SEMS+ has no grid voltage
+        grid_status: None,
+        battery: Some(Battery { soc, watts: kw * 1000.0, capacity_kwh: cached.and_then(|c| c.battery.as_ref()?.capacity_kwh) }),
+        utc_offset_h: Some(offset_h),
+        inverter_c: None,
+        battery_c: None,
+        created: cached.and_then(|c| c.created),
+    })
+}
+
+/// "+0500" → 5.0.
+fn parse_zone(z: &str) -> Option<f64> {
+    let (sign, rest) = z.trim().split_at_checked(1)?;
+    let h = rest.get(..2)?.parse::<f64>().ok()? + rest.get(2..4)?.parse::<f64>().ok()? / 60.0;
+    Some(if sign == "-" { -h } else { h })
+}
+
+/// shortcut: the Mac's zone stands in for the station's when classic never answered (the SEMS+
+/// login has none); read `zoneId` from stations/simple-query to do it right.
+fn mac_offset_h() -> f64 {
+    let out = std::process::Command::new("date").arg("+%z").output().ok();
+    out.and_then(|o| parse_zone(&String::from_utf8_lossy(&o.stdout))).unwrap_or(0.0)
 }
 
 /// `hems/power/statisticsAndPreV2` reply → today's `ChartSeries` for `day`.
@@ -372,6 +407,8 @@ pub struct Client {
     creds: Option<Credentials>,
     classic: Option<Session>,
     plus: Option<Session>,
+    /// The last classic reading: its zone, set-up day and battery size stand in while classic is unreachable.
+    cached: Option<Reading>,
     /// One SEMS+ day call at a time across the app: the poll's and the history walk's (T-015 § 4.7).
     gate: std::sync::Arc<tokio::sync::Mutex<()>>,
     /// The call `reading` or `day` made last ("sems/login", "sems+/day", …), for the log (T-026).
@@ -384,7 +421,7 @@ impl Client {
             .timeout(Duration::from_secs(20))
             .build()
             .expect("reqwest client"); // only fails if the TLS backend can't start
-        Client { http, creds, classic: None, plus: None, gate: Default::default(), call: "sems/reading" }
+        Client { http, creds, classic: None, plus: None, cached: None, gate: Default::default(), call: "sems/reading" }
     }
 
     pub fn signed_in(&self) -> bool {
@@ -399,20 +436,28 @@ impl Client {
     /// Checks the credentials with SEMS and keeps them for later polls. The caller saves them
     /// to the Keychain only after this returns Ok.
     pub async fn sign_in(&mut self, creds: Credentials) -> Result<(), SemsError> {
-        let s = self.classic_login(&creds).await?;
-        self.classic = Some(s);
-        self.plus = None;
+        match self.classic_login(&creds).await {
+            Ok(s) => (self.classic, self.plus) = (Some(s), None),
+            // Classic unreachable: the SEMS+ login proves the password just as well, and the
+            // readings then come from the chart (`plus_reading`).
+            Err(e @ (SemsError::Network(_) | SemsError::Body(_))) => {
+                let s = self.plus_login(&creds).await.map_err(|p| if matches!(p, SemsError::WrongLogin(_)) { p } else { e })?;
+                (self.classic, self.plus) = (None, Some(s));
+            }
+            Err(e) => return Err(e),
+        }
+        self.cached = None;
         self.creds = Some(creds);
         Ok(())
     }
 
     pub fn sign_out(&mut self) {
-        (self.creds, self.classic, self.plus) = (None, None, None);
+        (self.creds, self.classic, self.plus, self.cached) = (None, None, None, None);
     }
 
     /// The signed-in station's id, once the classic login has run. Never logged (T-015 § 4.2).
     pub fn station(&self) -> Option<String> {
-        self.classic.as_ref().map(|s| s.station.clone())
+        self.classic.as_ref().or(self.plus.as_ref()).map(|s| s.station.clone())
     }
 
     /// A past day's call that owns what it needs, so the caller can let the client go while it
@@ -430,8 +475,25 @@ impl Client {
         self.plus = None;
     }
 
-    /// The live reading; logs in when needed and once more on an expired token.
+    /// The live reading. When the classic server can't be reached, the newest SEMS+ chart minute
+    /// stands in for it (no temperatures then).
     pub async fn reading(&mut self) -> Result<Reading, SemsError> {
+        match self.classic_reading().await {
+            Ok(r) => Ok(self.cached.insert(r).clone()),
+            Err(e @ (SemsError::Network(_) | SemsError::Body(_))) => self.plus_reading().await.map_err(|_| e),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn plus_reading(&mut self) -> Result<Reading, SemsError> {
+        let offset = self.cached.as_ref().and_then(|c| c.utc_offset_h).unwrap_or_else(mac_offset_h);
+        let today = LocalTs((now_ms() / 1000) as i64 + (offset * 3600.0) as i64);
+        let d = self.day(today, Some(offset), false).await?;
+        reading_from_chart(&d.chart?, &d.grid?, self.cached.as_ref(), offset).ok_or_else(|| SemsError::Network("no chart point yet".into()))
+    }
+
+    /// The classic reading; logs in when needed and once more on an expired token.
+    async fn classic_reading(&mut self) -> Result<Reading, SemsError> {
         for attempt in 0..2 {
             if self.classic.is_none() {
                 let creds = self.creds.clone().ok_or(SemsError::SignedOut)?;
@@ -517,7 +579,7 @@ impl Client {
     }
 
     async fn post_classic(&self, url: &str, token: &str, body: Value) -> Result<(Value, String), SemsError> {
-        let req = self.http.post(url).header("Token", token).json(&body);
+        let req = self.http.post(url).header("Token", token).timeout(CLASSIC_TIMEOUT).json(&body);
         let (v, raw) = send(req).await?;
         Ok((v, raw))
     }
@@ -745,6 +807,19 @@ mod tests {
         assert_eq!(parse_reading(&v).unwrap_err(), "field `invert_full.vac1` missing");
         assert_eq!(parse_reading(&json!({"code": 0, "data": {}})).unwrap_err(), "field `info.time` missing");
         assert!(parse_reading(&json!({"code": 100002, "msg": "x"})).unwrap_err().starts_with("code 100002"));
+    }
+
+    #[test]
+    fn chart_stands_in_for_the_reading() {
+        let day = LocalTs::parse("11/17/2026 00:00:00").unwrap().day();
+        let chart = ChartSeries { day, points: vec![(1090, 97.0, 0.0), (1100, 98.0, -1.6)] };
+        let mut grid = GridDay::default();
+        let r = reading_from_chart(&chart, &grid, None, 5.0).unwrap();
+        assert_eq!((r.time.hhmm(), r.grid, r.battery.clone().map(|b| (b.soc, b.watts))), ("18:20".into(), GridSignal::On, Some((98.0, -1600.0))));
+        grid.off = vec![(1100, true)];
+        assert_eq!(reading_from_chart(&chart, &grid, None, 5.0).unwrap().grid, GridSignal::Off);
+        assert_eq!(reading_from_chart(&ChartSeries { day, points: vec![] }, &grid, None, 5.0), None);
+        assert_eq!((parse_zone("+0500\n"), parse_zone("-0330"), parse_zone("x")), (Some(5.0), Some(-3.5), None));
     }
 
     #[test]
