@@ -127,7 +127,16 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // Off the main thread: the read can wait on a Keychain prompt.
-                let creds = tauri::async_runtime::spawn_blocking(creds::load).await.ok().flatten();
+                let stored = tauri::async_runtime::spawn_blocking(creds::load).await.ok().flatten();
+                // Nothing stored: first run. Signed out last time: stay signed out, the box comes filled in.
+                let first_run = stored.is_none();
+                let creds = match stored {
+                    Some(s) if s.signed_out => {
+                        *handle.state::<signin::SignIn>().remembered.lock().unwrap() = Some(s.creds);
+                        None
+                    }
+                    s => s.map(|s| s.creds),
+                };
                 // After the SEMS item, never two Keychain prompts at once.
                 auto.set_keys(tauri::async_runtime::spawn_blocking(creds::load_tuya).await.ok().flatten());
                 let signed_in = {
@@ -145,7 +154,7 @@ pub fn run() {
                 };
                 if !signed_in {
                     // First run, or the Keychain said no (e.g. Deny after an update): ask in the box.
-                    handle.state::<signin::SignIn>().first_run.store(true, std::sync::atomic::Ordering::SeqCst);
+                    handle.state::<signin::SignIn>().first_run.store(first_run, std::sync::atomic::Ordering::SeqCst);
                     mon.lock().unwrap().signed_in = false;
                     shell::refresh(&handle);
                     signin::open(&handle);

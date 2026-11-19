@@ -24,6 +24,8 @@ pub struct SignIn {
     cancel: Mutex<Option<oneshot::Sender<()>>>,
     /// No credentials were stored at launch: the first sign-in turns start-at-login on.
     pub first_run: AtomicBool,
+    /// The login kept after Sign Out: fills in the box (email and password) until the next sign-in.
+    pub remembered: Mutex<Option<Credentials>>,
 }
 
 /// The error line for a failed sign-in, exact approved copy.
@@ -35,7 +37,8 @@ pub fn message(e: &SemsError) -> &'static str {
     }
 }
 
-/// Opens the box (first run, the panel's "Sign In…"). Prefills the email in memory, if any.
+/// Opens the box (first run, the panel's "Sign In…"). Prefills the login kept after Sign Out,
+/// else the email in memory, if any.
 pub fn open(app: &AppHandle) {
     let st = app.state::<SignIn>();
     if !st.loaded.load(Ordering::SeqCst) {
@@ -45,10 +48,14 @@ pub fn open(app: &AppHandle) {
     crate::accent::apply(app);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let email = app.state::<Arc<tokio::sync::Mutex<Client>>>().lock().await.account();
+        let kept = app.state::<SignIn>().remembered.lock().unwrap().clone();
+        let (email, password) = match kept {
+            Some(c) => (c.account, c.password),
+            None => (app.state::<Arc<tokio::sync::Mutex<Client>>>().lock().await.account().unwrap_or_default(), String::new()),
+        };
         // The hint shows only until notification permission has been asked.
         let hint = notify::permission().await.is_none_or(|p| p == notify::Permission::NotAsked);
-        let _ = app.emit_to(WIN, "signin-open", json!({ "email": email.unwrap_or_default(), "hint": hint }));
+        let _ = app.emit_to(WIN, "signin-open", json!({ "email": email, "password": password, "hint": hint }));
     });
 }
 
@@ -120,8 +127,9 @@ pub async fn signin_submit(app: AppHandle, email: String, password: String) -> R
     // Accepted, and Cancel can no longer stop it (its sender is gone).
     if let Err(e) = creds::save(&creds) {
         // Keep the session anyway; the box shows again at the next launch.
-        logdir::line(&dir, &format!("keychain save failed: {e}"));
+        logdir::line(&dir, &format!("keychain save failed: {}", shell::keychain_kind(&e)));
     }
+    *app.state::<SignIn>().remembered.lock().unwrap() = None;
     let shared = app.state::<Arc<tokio::sync::Mutex<Client>>>().inner().clone();
     let mut client = shared.lock().await;
     let same_account = client.account().as_deref() == Some(creds.account.as_str());

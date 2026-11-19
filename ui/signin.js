@@ -1,4 +1,4 @@
-// The sign-in box. Rust opens it with `signin-open` {email, hint}; Return = Sign In, Esc = Cancel.
+// The sign-in box. Rust opens it with `signin-open` {email, password, hint}; Return = Sign In, Esc = Cancel.
 // Cancel works while signing in too: Rust drops the request and saves nothing.
 (function () {
   'use strict';
@@ -22,7 +22,7 @@
   listen('signin-open', async e => {
     setBusy(false);
     email.value = e.payload.email || '';
-    pw.value = '';
+    pw.value = e.payload.password || '';
     showError('');
     $('hint').hidden = !e.payload.hint;
     await fit(true);

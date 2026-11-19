@@ -277,16 +277,22 @@ pub fn open_logs(app: &AppHandle) {
     let _ = app.opener().open_path(dir.to_string_lossy(), None::<&str>);
 }
 
-/// Settings › Sign Out: the Keychain item, then the client, then the monitor. A poll holding
-/// the client is waited for, but the app signs out at once (the monitor's generation makes
-/// that poll drop its result).
+/// Settings › Sign Out: the Keychain item (kept, marked signed out, so the sign-in box opens
+/// filled in and a relaunch stays signed out), then the client, then the monitor. A poll
+/// holding the client is waited for, but the app signs out at once (the monitor's generation
+/// makes that poll drop its result).
 pub async fn sign_out(app: &AppHandle) {
     let dir = app.state::<Shell>().log_dir.clone();
-    match tauri::async_runtime::spawn_blocking(crate::creds::delete).await {
-        Ok(Ok(())) => {}
-        // Still signed out for this run; the next launch would find the item. No account in the log.
-        Ok(Err(e)) => logdir::line(&dir, &format!("sign-out: keychain delete failed: {}", keychain_kind(&e))),
-        Err(_) => logdir::line(&dir, "sign-out: keychain delete failed: task"),
+    match tauri::async_runtime::spawn_blocking(crate::creds::mark_signed_out).await {
+        Ok(Ok(kept)) => *app.state::<crate::signin::SignIn>().remembered.lock().unwrap() = kept,
+        // Could not mark it: remove it, or the next launch would sign in. No account in the log.
+        Ok(Err(e)) => {
+            logdir::line(&dir, &format!("sign-out: keychain mark failed: {}", keychain_kind(&e)));
+            if let Ok(Err(e)) = tauri::async_runtime::spawn_blocking(crate::creds::delete).await {
+                logdir::line(&dir, &format!("sign-out: keychain delete failed: {}", keychain_kind(&e)));
+            }
+        }
+        Err(_) => logdir::line(&dir, "sign-out: keychain mark failed: task"),
     }
     let client = app.state::<Arc<tokio::sync::Mutex<crate::sems::Client>>>().inner().clone();
     let mut held = client.try_lock().ok();
@@ -302,7 +308,7 @@ pub async fn sign_out(app: &AppHandle) {
 }
 
 /// The error's kind only: a keyring message may carry the item's attributes.
-fn keychain_kind(e: &keyring::Error) -> &'static str {
+pub fn keychain_kind(e: &keyring::Error) -> &'static str {
     match e {
         keyring::Error::PlatformFailure(_) => "platform failure",
         keyring::Error::NoStorageAccess(_) => "no storage access",
