@@ -22,7 +22,7 @@
     GW.bindChart(root);
     if (focused && strip == null) { // the strip restores its own cut below
       const b = root.querySelector(`[data-action="${focused}"]`);
-      if (b) b.focus();
+      if (b) b.focus({ preventScroll: true });
     }
     const ns = strip != null && root.querySelector('.gw-strip-plot[tabindex]');
     if (ns) { ns.dataset.kb = strip; ns.focus({ preventScroll: true }); }
@@ -32,9 +32,17 @@
       GW.showAt(np, reading.at);
     }
     if (s.refreshing && !(was && was.refreshing)) busySince = Date.now();
-    invoke('panel_height', { h: root.firstElementChild.getBoundingClientRect().height });
+    sendHeight(); // also here, not only from the observer: the done/ stage pages read the height right after a render
     flush();
   }
+  // T-040: the window follows the card whenever its height changes, not only on render (a line in or out), so the page
+  // (overflow hidden) never clips the footer. One call per new height; 0 = nothing drawn yet.
+  let sent = 0;
+  function sendHeight() {
+    const h = root.getBoundingClientRect().height;
+    if (h && h !== sent) { sent = h; invoke('panel_height', { h }); }
+  }
+  new ResizeObserver(sendHeight).observe(root);
 
   // T-029: the opening motion, only when the panel window is shown (Rust sends this right after the state). Off with
   // Settings › Reduce motion; animateOpen also skips it when macOS asks for reduced motion.
@@ -97,6 +105,6 @@
     const rows = enabled(), i = rows.indexOf(document.activeElement), n = rows.length;
     if (!n) return;
     const down = e.key === 'ArrowDown';
-    rows[i < 0 ? (down ? 0 : n - 1) : (i + (down ? 1 : n - 1)) % n].focus();
+    rows[i < 0 ? (down ? 0 : n - 1) : (i + (down ? 1 : n - 1)) % n].focus({ preventScroll: true });
   });
 })();

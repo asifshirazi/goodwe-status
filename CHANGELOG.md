@@ -4,6 +4,11 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ## [Unreleased]
 
+### Fixed
+- The panel no longer scrolls sideways or up and down, and its right edge is no longer cut off when macOS shows scroll bars (a mouse connected, or "Show scroll bars" set to Always). The panel's height now follows its content whenever a line is added or removed.
+- Inverter and battery temperatures show again while SEMS Portal is down, read from SEMS+, and stay on screen through a short SEMS+ hiccup. The app now signs in to SEMS+ at the address SEMS+ gives for the account, with its Hong Kong address as a fallback.
+- The time left on the battery (or to full) shows again after a restart while SEMS Portal is down, once the app has seen the battery size from SEMS Portal one time.
+
 ## [0.2.3] - 2026-11-03
 
 ### Added

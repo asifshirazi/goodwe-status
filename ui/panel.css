@@ -13,7 +13,7 @@
   --gw-fill-hover:var(--fill-hover); --gw-fill-press:var(--fill-press); --gw-track:var(--track);
   --gw-tip-bg:var(--tip-bg); --gw-tip-edge:var(--tip-edge); --gw-cursor:var(--text-2); --gw-dot-ring:var(--surface);
   --gw-pad:14px;
-  width:340px; box-sizing:border-box; border-radius:var(--r-card); overflow:visible; padding-bottom:0;
+  width:100%; box-sizing:border-box; border-radius:var(--r-card); overflow:visible; padding-bottom:0;
   background:var(--frame); color:var(--text); border:3px solid var(--rim); /* the references' outer ring, inside the 340 pt */
   font:var(--t-body); -webkit-font-smoothing:antialiased; font-variant-numeric:tabular-nums; cursor:default; user-select:none;
 }
@@ -163,12 +163,12 @@
 /* ---- Today's cut strip (T-020/T-023/T-025): thin track, round-ended cuts, dotted hours to come; opens Stats ---- */
 .gw-strip{margin-top:var(--s3)}
 .gw-outlook > .gw-strip:first-child{margin-top:2px}
-.gw-strip-plot{position:relative;width:300px;border-radius:4px;outline:none;cursor:pointer;
+.gw-strip-plot{position:relative;width:100%;border-radius:4px;outline:none;cursor:pointer;
   transition:background-color var(--press) ease-out,box-shadow var(--press) ease-out}
 @media (hover:hover){ #root:not(.gw-still) .gw-strip-plot:hover:not(.is-press):not(:active){background:var(--fill-hover);box-shadow:0 0 0 4px var(--fill-hover)} }
 .gw-strip-plot:active,.gw-strip-plot.is-press{background:var(--fill-press);box-shadow:0 0 0 4px var(--fill-press)}
 .gw-strip-plot:focus-visible{outline:2px solid var(--focus);outline-offset:4px}
-.gw-strip svg{display:block;overflow:visible}
+.gw-strip svg{display:block;overflow:visible;width:100%;height:auto}
 .gw-strip .track{fill:var(--track)}
 .gw-strip .track-rest{fill:none;stroke:var(--text-2);stroke-dasharray:1 3;stroke-linecap:round}
 .gw-strip .cut{fill:var(--grid-off);transition:opacity var(--press) ease-out}
