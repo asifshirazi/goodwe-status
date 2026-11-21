@@ -38,3 +38,6 @@
 
 # Local living design reference (owner)
 /design/
+
+# Armaze local marker
+/.armaze-seen
