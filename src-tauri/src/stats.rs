@@ -424,6 +424,7 @@ mod tests {
             utc_offset_h: Some(5.0),
             inverter_c: None,
             battery_c: None,
+            temps_old: false,
             created: LocalTs::parse("09/18/2026 18:28:53"),
         };
         m.set_station(Some("station-a".into()));

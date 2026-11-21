@@ -31,6 +31,10 @@ pub trait Source: Send {
     fn station(&self) -> Option<String>;
     /// The call `reading` or `day` made last, for the log: "sems/login", "sems+/day"… (T-026).
     fn call(&self) -> &'static str;
+    /// The SEMS+ temperature calls' outcome in the last `reading`, once (T-038 B-Y1). `None`: none ran.
+    fn take_temps_result(&mut self) -> Option<Result<(), SemsError>> {
+        None
+    }
 }
 
 impl Source for sems::Client {
@@ -57,6 +61,9 @@ impl Source for sems::Client {
     }
     fn call(&self) -> &'static str {
         self.call
+    }
+    fn take_temps_result(&mut self) -> Option<Result<(), SemsError>> {
+        sems::Client::take_temps_result(self)
     }
 }
 
@@ -461,8 +468,11 @@ impl Monitor {
             self.own.retain(|p| p.0.day() == r.time.day());
             self.own.push((r.time, b.soc, b.watts / 1000.0));
         }
-        // Keep the newest reading at least 30 min old and every one after it (the trend's base).
-        self.temps.push((r.time, r.inverter_c, r.battery_c));
+        // Keep the newest reading at least 30 min old and every one after it (the trend's base);
+        // kept-over temperatures (T-038) are not a new sample.
+        if !r.temps_old {
+            self.temps.push((r.time, r.inverter_c, r.battery_c));
+        }
         if let Some(i) = self.temps.iter().rposition(|p| r.time.0 - p.0 .0 >= rules::TREND_AFTER_S) {
             self.temps.drain(..i);
         }
@@ -809,6 +819,11 @@ pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monit
         }
     };
     rep.oks.extend(["sems/login", "sems/reading"]);
+    match src.take_temps_result() {
+        Some(Ok(())) => rep.oks.push(TEMPS),
+        Some(Err(e)) => push(&mut rep, fail_entry(TEMPS, "", &e, "kept the last temperatures, shown without a trend")),
+        None => {}
+    }
     if r.grid == GridSignal::Disagree {
         rep.disagreement = Some(format!("vac1 {} V, grid_conn_status {:?}", r.vac1, r.grid_status));
     }
@@ -896,6 +911,9 @@ pub async fn poll_once<S: Source>(src: &tokio::sync::Mutex<S>, mon: &Mutex<Monit
 /// The limiter's name for past-day calls (poll and walk), so today's working call never clears
 /// a past day's failures and lets them flood the log.
 const PAST: &str = "sems+/history";
+
+/// SEMS+ device telemetry, the temperatures while SEMS Portal is down (T-038).
+const TEMPS: &str = "sems+/telemetry";
 
 /// Adds an entry; today's chart and grid come from one reply, so an unreadable one is dumped once (T-004).
 fn push(rep: &mut PollReport, mut f: logdir::Fail) {
@@ -1070,6 +1088,7 @@ mod tests {
             utc_offset_h: Some(5.0),
             inverter_c: None,
             battery_c: None,
+            temps_old: false,
             created: LocalTs::parse("09/18/2026 18:28:53"),
         }
     }
@@ -1286,6 +1305,8 @@ mod tests {
         t0: tokio::time::Instant,
         expired: u32,
         call: &'static str,
+        /// Each reading's SEMS+ telemetry outcome, in order (`take_temps_result`).
+        temps: VecDeque<Option<Result<(), SemsError>>>,
     }
 
     impl Source for Fake {
@@ -1320,6 +1341,9 @@ mod tests {
         }
         fn call(&self) -> &'static str {
             self.call
+        }
+        fn take_temps_result(&mut self) -> Option<Result<(), SemsError>> {
+            self.temps.pop_front().flatten()
         }
         async fn reading(&mut self) -> Result<Reading, SemsError> {
             self.call = "sems/reading";
@@ -1375,6 +1399,7 @@ mod tests {
             t0: tokio::time::Instant::now(),
             expired: 0,
             call: "sems/reading",
+            temps: Default::default(),
         };
         (Arc::new(tokio::sync::Mutex::new(f)), polls)
     }
@@ -1917,6 +1942,21 @@ mod tests {
         let mon = Mutex::new(Monitor::new(true));
         assert_eq!(poll(&src, &mon).await.low_battery, None);
         assert_eq!(poll(&src, &mon).await.low_battery, Some(19.6));
+    }
+
+    #[tokio::test]
+    async fn telemetry_failures_reach_the_log() {
+        // T-038 B-Y1: a failed SEMS+ temperature call is a log entry, its recovery an OK; none when it didn't run
+        let r = |t| Ok(reading(t, GridSignal::On, 90.0, 0.0));
+        let (src, _) = fake(vec![r("10/18/2026 08:20:00"), r("10/18/2026 08:22:00"), r("10/18/2026 08:24:00")], vec![]);
+        src.lock().await.temps = [Some(Err(SemsError::RateLimited)), Some(Ok(())), None].into();
+        let mon = Mutex::new(Monitor::new(true));
+        let p = poll(&src, &mon).await;
+        let lines: Vec<_> = p.fails.iter().filter(|f| f.call != "sems+/day").map(|f| (f.call.as_str(), f.line.as_str())).collect();
+        assert_eq!(lines, [("sems+/telemetry", "FAIL sems+/telemetry · rate limited · action: kept the last temperatures, shown without a trend")]);
+        assert!(poll(&src, &mon).await.oks.contains(&"sems+/telemetry"));
+        let p = poll(&src, &mon).await;
+        assert!(!p.oks.contains(&"sems+/telemetry") && p.fails.iter().all(|f| f.call != "sems+/telemetry"), "SEMS Portal answered: no telemetry ran");
     }
 
     #[tokio::test]

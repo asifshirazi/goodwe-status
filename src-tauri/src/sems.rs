@@ -7,7 +7,8 @@
 //! - classic (`www.semsportal.com`): login + live reading (it has the grid voltage).
 //! - SEMS+ web gateway (`semsplus.goodwe.com`): its own login and a signed `X-Signature`
 //!   header; gives a day's per-minute SOC, battery, grid and load kW: the chart, and the
-//!   grid-off minutes the outage rules (outages.rs) work on.
+//!   grid-off minutes the outage rules (outages.rs) work on; and, while classic is down, the
+//!   inverter and battery temperatures from each device's telemetry (T-038).
 
 use crate::clock::LocalTs;
 use crate::outages::GridDay;
@@ -23,7 +24,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const CLASSIC_LOGIN: &str = "https://www.semsportal.com/api/v2/Common/CrossLogin";
 const CLASSIC_TOKEN0: &str = r#"{"version":"v2.1.0","client":"ios","language":"en"}"#;
 const PLUS_LOGIN: &str = "https://semsplus.goodwe.com/web/sems/sems-user/api/v1/auth/cross-login";
+/// The hk front end: same login, same `data.api`; tried when the first one doesn't connect (T-038 § 3,
+/// 2026-11-21 semsplus.goodwe.com timed out while this answered).
+const PLUS_LOGIN_HK: &str = "https://hk-semsplus.goodwe.com/web/sems/sems-user/api/v1/auth/cross-login";
 const PLUS_ORIGIN: &str = "https://semsplus.goodwe.com";
+/// SEMS+ device kinds that carry a temperature, and the telemetry factor (by `code`) holding it:
+/// the inverter's internal one and the hottest cell of a battery rack (T-038 § 1).
+const TEMP_FACTORS: [(&str, &str); 2] = [("INVERTER", "Temperature"), ("BATTERY_RACK", "tempMaxCell")];
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 /// Below this the grid counts as off (design doc § Rules).
 const GRID_OFF_VOLTS: f64 = 50.0;
@@ -56,6 +63,9 @@ pub struct Reading {
     /// Inverter (internal) and hottest battery pack temperature, °C; `None` when not a real reading (T-015).
     pub inverter_c: Option<f64>,
     pub battery_c: Option<f64>,
+    /// SEMS+ only: a telemetry call failed and the last temperatures were kept: shown without a
+    /// trend, like a stale reading's (T-038 edge case).
+    pub temps_old: bool,
     /// `info.create_time`: when the station was set up. SEMS+ has no history before it (T-015 spike).
     pub created: Option<LocalTs>,
 }
@@ -201,6 +211,7 @@ pub fn parse_reading(v: &Value) -> Result<Reading, String> {
         utc_offset_h: num(&info["time_span"]).map(|s| -s),
         inverter_c: full["tempperature"].as_f64(), // sic
         battery_c,
+        temps_old: false,
         created: info["create_time"].as_str().and_then(LocalTs::parse),
     })
 }
@@ -219,8 +230,100 @@ pub fn reading_from_chart(chart: &ChartSeries, grid: &GridDay, cached: Option<&R
         utc_offset_h: Some(offset_h),
         inverter_c: None,
         battery_c: None,
+        temps_old: false,
         created: cached.and_then(|c| c.created),
     })
+}
+
+/// `web/device/centralized/page` reply → the serials on `station` (it lists every station the account sees).
+pub fn parse_devices(v: &Value, station: &str) -> Result<Vec<String>, String> {
+    check_plus_code(v)?;
+    let list = v["data"]["dataList"].as_array().ok_or_else(|| missing("data.dataList"))?;
+    Ok(list
+        .iter()
+        .flat_map(|s| s["children"].as_array().into_iter().flatten())
+        .filter(|c| c["stationId"] == station)
+        .filter_map(|c| c["sn"].as_str().map(str::to_owned))
+        .collect())
+}
+
+/// `equipments/{sn}/telemetry` reply → factor `code`'s value, found by code in any group (the order
+/// is not a contract). `None`: no such factor, or no number ("", "--" when a device is offline).
+pub fn parse_telemetry(v: &Value, code: &str) -> Result<Option<f64>, String> {
+    check_plus_code(v)?;
+    let groups = v["data"].as_array().ok_or_else(|| missing("data"))?;
+    Ok(groups.iter().flat_map(|g| g["factors"].as_array().into_iter().flatten()).find(|f| f["code"] == code).and_then(|f| num(&f["data"])))
+}
+
+/// Each kind's fresh temperature (`None`: its call failed), or else the last one kept; `true` when
+/// one was kept, so the panel marks it old instead of Settings saying "doesn't send" (T-038).
+fn keep_last(fresh: [Option<Option<f64>>; 2], last: [Option<f64>; 2]) -> ([Option<f64>; 2], bool) {
+    let mut old = false;
+    let out = std::array::from_fn(|i| {
+        fresh[i].unwrap_or_else(|| {
+            old |= last[i].is_some();
+            last[i]
+        })
+    });
+    (out, old)
+}
+
+/// `call(kind index, serial)` for each device in list order, until one is rate limited: the devices
+/// after it get `RateLimited` without a call, so a rate limit sends no more calls this poll (T-038 B-R1).
+async fn each_device<F, Fut>(devices: &[Vec<String>; 2], mut call: F) -> Vec<(usize, Result<Option<f64>, SemsError>)>
+where
+    F: FnMut(usize, String) -> Fut,
+    Fut: Future<Output = Result<Option<f64>, SemsError>>,
+{
+    let mut out = vec![];
+    for (i, sns) in devices.iter().enumerate() {
+        for sn in sns {
+            let r = if out.iter().any(|(_, r)| matches!(r, Err(SemsError::RateLimited))) { Err(SemsError::RateLimited) } else { call(i, sn.clone()).await };
+            out.push((i, r));
+        }
+    }
+    out
+}
+
+/// Each device's telemetry result (its `TEMP_FACTORS` kind index first) folded per kind: the hottest
+/// value; `None` when a call failed and none answered, `Some(None)` when the kind has no device (no
+/// battery rack). `false`: list the devices again next poll, only after an unreadable reply (a device
+/// gone or the reply changed), not after a timeout or a rate limit (T-038 § 4).
+fn fold_temps(results: &[(usize, Result<Option<f64>, SemsError>)]) -> ([Option<Option<f64>>; 2], bool) {
+    let (mut out, mut failed) = ([None, None], [false, false]);
+    for (i, r) in results {
+        match r {
+            Ok(c) => out[*i] = [out[*i], *c].into_iter().flatten().reduce(f64::max),
+            Err(_) => failed[*i] = true,
+        }
+    }
+    let keep_list = !results.iter().any(|(_, r)| matches!(r, Err(SemsError::Parse { .. })));
+    (std::array::from_fn(|i| (!failed[i] || out[i].is_some()).then_some(out[i])), keep_list)
+}
+
+/// Where a SEMS+ sign-in goes, in order: the address the last sign-in reply named (`data.api`), then
+/// the fixed front ends, needed only for the very first one (T-038 § 3).
+fn plus_login_urls(api: Option<&str>) -> Vec<String> {
+    api.map(|a| format!("{a}/sems-user/api/v1/auth/cross-login")).into_iter().chain([PLUS_LOGIN, PLUS_LOGIN_HK].map(str::to_owned)).collect()
+}
+
+enum LoginNext {
+    Stop,
+    Unanswered,
+    Refused,
+}
+
+/// After one SEMS+ sign-in address: go on when it doesn't connect or answers with no JSON (a 404
+/// page), and when it refuses with a code and another address is left, so a remembered `data.api`
+/// that errors (B0001 in an incident) can't hold every later sign-in (T-038 B-O1). A wrong password
+/// (100005) stops: every address would say the same, and repeats could lock the account.
+fn login_next(r: &Result<(Value, String), SemsError>, last: bool) -> LoginNext {
+    match r {
+        Err(SemsError::Network(_) | SemsError::Body(_)) => LoginNext::Unanswered,
+        Err(SemsError::Parse { reason, .. }) if reason.starts_with("not JSON") => LoginNext::Unanswered,
+        Err(SemsError::Parse { reason, .. }) if reason.starts_with("code ") && !reason.starts_with("code 100005") && !last => LoginNext::Refused,
+        _ => LoginNext::Stop,
+    }
 }
 
 /// "+0500" → 5.0.
@@ -397,6 +500,8 @@ struct Session {
     /// SEMS+ only: uid and token for the signature.
     uid: String,
     raw_token: String,
+    /// SEMS+ only: the station's serials per `TEMP_FACTORS` kind, listed once per session (T-038).
+    devices: Option<[Vec<String>; 2]>,
 }
 
 /// One SEMS+ day call (statisticsAndPreV2), body included.
@@ -409,6 +514,12 @@ pub struct Client {
     plus: Option<Session>,
     /// The last classic reading: its zone, set-up day and battery size stand in while classic is unreachable.
     cached: Option<Reading>,
+    /// The last SEMS+ sign-in reply's `data.api`: later sign-ins go there first (T-038 § 3).
+    plus_api: Option<String>,
+    /// The last inverter and battery temperatures, kept when a SEMS+ telemetry call fails (T-038).
+    last_temps: [Option<f64>; 2],
+    /// The last SEMS+ telemetry round's outcome (its first failure), until the poll takes it for the log (T-038 B-Y1).
+    temps_result: Option<Result<(), SemsError>>,
     /// One SEMS+ day call at a time across the app: the poll's and the history walk's (T-015 § 4.7).
     gate: std::sync::Arc<tokio::sync::Mutex<()>>,
     /// The call `reading` or `day` made last ("sems/login", "sems+/day", …), for the log (T-026).
@@ -421,7 +532,7 @@ impl Client {
             .timeout(Duration::from_secs(20))
             .build()
             .expect("reqwest client"); // only fails if the TLS backend can't start
-        Client { http, creds, classic: None, plus: None, cached: None, gate: Default::default(), call: "sems/reading" }
+        Client { http, creds, classic: None, plus: None, cached: None, plus_api: None, last_temps: [None, None], temps_result: None, gate: Default::default(), call: "sems/reading" }
     }
 
     pub fn signed_in(&self) -> bool {
@@ -441,18 +552,19 @@ impl Client {
             // Classic unreachable: the SEMS+ login proves the password just as well, and the
             // readings then come from the chart (`plus_reading`).
             Err(e @ (SemsError::Network(_) | SemsError::Body(_))) => {
+                self.plus_api = None; // a new account may sit in another region
                 let s = self.plus_login(&creds).await.map_err(|p| if matches!(p, SemsError::WrongLogin(_)) { p } else { e })?;
-                (self.classic, self.plus) = (None, Some(s));
+                (self.classic, self.plus_api, self.plus) = (None, Some(s.api.clone()), Some(s));
             }
             Err(e) => return Err(e),
         }
-        self.cached = None;
+        (self.cached, self.last_temps) = (None, [None, None]);
         self.creds = Some(creds);
         Ok(())
     }
 
     pub fn sign_out(&mut self) {
-        (self.creds, self.classic, self.plus, self.cached) = (None, None, None, None);
+        (self.creds, self.classic, self.plus, self.cached, self.plus_api, self.last_temps) = (None, None, None, None, None, [None, None]);
     }
 
     /// The signed-in station's id, once the classic login has run. Never logged (T-015 § 4.2).
@@ -470,16 +582,24 @@ impl Client {
         })
     }
 
+    /// The last SEMS+ telemetry round's outcome, once: `None` when none ran since (SEMS Portal answered).
+    pub fn take_temps_result(&mut self) -> Option<Result<(), SemsError>> {
+        self.temps_result.take()
+    }
+
     /// The walk saw the SEMS+ session expire: the poll's next day call signs in again.
     pub fn plus_expired(&mut self) {
         self.plus = None;
     }
 
     /// The live reading. When the classic server can't be reached, the newest SEMS+ chart minute
-    /// stands in for it (no temperatures then).
+    /// stands in for it, with the temperatures from the devices' telemetry.
     pub async fn reading(&mut self) -> Result<Reading, SemsError> {
         match self.classic_reading().await {
-            Ok(r) => Ok(self.cached.insert(r).clone()),
+            Ok(r) => {
+                self.last_temps = [r.inverter_c, r.battery_c];
+                Ok(self.cached.insert(r).clone())
+            }
             Err(e @ (SemsError::Network(_) | SemsError::Body(_))) => self.plus_reading().await.map_err(|_| e),
             Err(e) => Err(e),
         }
@@ -489,7 +609,41 @@ impl Client {
         let offset = self.cached.as_ref().and_then(|c| c.utc_offset_h).unwrap_or_else(mac_offset_h);
         let today = LocalTs((now_ms() / 1000) as i64 + (offset * 3600.0) as i64);
         let d = self.day(today, Some(offset), false).await?;
-        reading_from_chart(&d.chart?, &d.grid?, self.cached.as_ref(), offset).ok_or_else(|| SemsError::Network("no chart point yet".into()))
+        let mut r = reading_from_chart(&d.chart?, &d.grid?, self.cached.as_ref(), offset).ok_or_else(|| SemsError::Network("no chart point yet".into()))?;
+        let ([inv, bat], old) = keep_last(self.plus_temps().await, self.last_temps);
+        (r.inverter_c, r.battery_c, r.temps_old) = (inv, bat, old);
+        self.last_temps = [inv, bat];
+        Ok(r)
+    }
+
+    /// Inverter and hottest battery temperature from SEMS+ telemetry (T-038): 2 GETs a poll once the
+    /// device list is known (see `fold_temps`). A rate limit stops the calls for this poll, as the day call does.
+    async fn plus_temps(&mut self) -> [Option<Option<f64>>; 2] {
+        let Some(s) = self.plus.as_mut() else { return [None, None] };
+        if s.devices.is_none() {
+            match plus_devices(&self.http, s).await {
+                Ok(d) => s.devices = Some(d),
+                Err(e) => {
+                    self.temps_result = Some(Err(e));
+                    return [None, None];
+                }
+            }
+        }
+        let Some(devices) = s.devices.clone() else { return [None, None] };
+        let results = each_device(&devices, |i, sn| {
+            let ((kind, code), (http, s)) = (TEMP_FACTORS[i], (&self.http, &*s));
+            async move {
+                let url = format!("{}/sems-plant/api/equipments/{sn}/telemetry?deviceType={kind}&pwId={}", s.api, s.station);
+                post_plus(http, &url, s, None, None).await.and_then(|(v, raw)| parse_telemetry(&v, code).map_err(|reason| SemsError::Parse { reason, reply: raw }))
+            }
+        })
+        .await;
+        self.temps_result = Some(results.iter().find_map(|(_, r)| r.clone().err()).map_or(Ok(()), Err));
+        let (out, keep_list) = fold_temps(&results);
+        if !keep_list {
+            s.devices = None;
+        }
+        out
     }
 
     /// The classic reading; logs in when needed and once more on an expired token.
@@ -522,7 +676,9 @@ impl Client {
             if self.plus.is_none() {
                 let creds = self.creds.clone().ok_or(SemsError::SignedOut)?;
                 self.call = "sems+/login";
-                self.plus = Some(self.plus_login(&creds).await?);
+                let s = self.plus_login(&creds).await?;
+                self.plus_api = Some(s.api.clone());
+                self.plus = Some(s);
             }
             self.call = "sems+/day";
             match day_call(&self.http, self.plus.as_ref().expect("set above"), date, utc_offset_h, setup).await {
@@ -551,14 +707,28 @@ impl Client {
             .as_str()
             .ok_or_else(|| SemsError::Parse { reason: missing("data.list[0].id"), reply: sraw })?
             .to_owned();
-        Ok(Session { token, api, station, uid: String::new(), raw_token: String::new() })
+        Ok(Session { token, api, station, uid: String::new(), raw_token: String::new(), devices: None })
     }
 
     async fn plus_login(&self, c: &Credentials) -> Result<Session, SemsError> {
         let t0 = json!({"uid":"","token":"","timestamp":0,"client":"semsPlusWeb","version":"","language":"en"});
         let body = json!({ "account": c.account, "pwd": plus_pwd(&c.password), "agreement": 1, "isChinese": false, "isLocal": false });
-        let anon = Session { token: t0.to_string(), api: String::new(), station: String::new(), uid: String::new(), raw_token: String::new() };
-        let (v, raw) = match post_plus(&self.http, PLUS_LOGIN, &anon, body, None).await {
+        let anon = Session { token: t0.to_string(), api: String::new(), station: String::new(), uid: String::new(), raw_token: String::new(), devices: None };
+        let urls = plus_login_urls(self.plus_api.as_deref());
+        let (mut first, mut refused) = (Err(SemsError::Network("no SEMS+ sign-in address".into())), None);
+        for (n, url) in urls.iter().enumerate() {
+            first = post_plus(&self.http, url, &anon, Some(body.clone()), None).await;
+            match login_next(&first, n + 1 == urls.len()) {
+                LoginNext::Stop => break,
+                LoginNext::Refused => refused = Some(first.clone()),
+                LoginNext::Unanswered => {}
+            }
+        }
+        // A refusal says more than a later address not answering.
+        if matches!(first, Err(SemsError::Network(_) | SemsError::Body(_))) || matches!(&first, Err(SemsError::Parse { reason, .. }) if reason.starts_with("not JSON")) {
+            first = refused.unwrap_or(first);
+        }
+        let (v, raw) = match first {
             Err(SemsError::Parse { reason, reply }) if reason.starts_with("code ") => {
                 return Err(login_refused(&serde_json::from_str(&reply).unwrap_or_default(), "description"))
             }
@@ -569,8 +739,8 @@ impl Client {
         let uid = data["uid"].as_str().ok_or_else(|| parse_err(missing("data.uid")))?.to_owned();
         let raw_token = data["token"].as_str().ok_or_else(|| parse_err(missing("data.token")))?.to_owned();
         let api = data["api"].as_str().ok_or_else(|| parse_err(missing("data.api")))?.trim_end_matches('/').to_owned();
-        let mut s = Session { token: data.to_string(), api, station: String::new(), uid, raw_token };
-        let (sv, sraw) = post_plus(&self.http, &format!("{}/sems-plant/api/stations/simple-query", s.api), &s, json!({}), None).await?;
+        let mut s = Session { token: data.to_string(), api, station: String::new(), uid, raw_token, devices: None };
+        let (sv, sraw) = post_plus(&self.http, &format!("{}/sems-plant/api/stations/simple-query", s.api), &s, Some(json!({})), None).await?;
         s.station = sv["data"]["dataList"][0]["id"]
             .as_str()
             .ok_or_else(|| SemsError::Parse { reason: missing("data.dataList[0].id"), reply: sraw })?
@@ -597,22 +767,36 @@ async fn day_call(http: &reqwest::Client, s: &Session, date: LocalTs, utc_offset
     });
     let url = format!("{}/sems-plant/api/v1/hems/power/statisticsAndPreV2", s.api);
     // A day's reply is ~488 KB and SEMS+ is slow (10-20 s): 60 s here, the client's 20 s elsewhere (T-012).
-    let (v, raw) = post_plus(http, &url, s, body, Some(DAY_TIMEOUT)).await?;
+    let (v, raw) = post_plus(http, &url, s, Some(body), Some(DAY_TIMEOUT)).await?;
     let bad = |reason: String| SemsError::Parse { reason, reply: raw.clone() };
     Ok(Day { chart: parse_chart(&v, day).map_err(bad), grid: parse_grid_day(&v, day, setup).map_err(bad) })
 }
 
-/// A signed SEMS+ call. Maps 401/C0602 to `Expired`, GY0429 to `RateLimited` and any other non-"00000" code to `Parse`.
-async fn post_plus(http: &reqwest::Client, url: &str, s: &Session, body: Value, timeout: Option<Duration>) -> Result<(Value, String), SemsError> {
-    let mut req = http
-        .post(url)
+/// The station's serials for each `TEMP_FACTORS` kind (one list call per kind: two kinds in one
+/// list return only the first, T-038 § 2).
+async fn plus_devices(http: &reqwest::Client, s: &Session) -> Result<[Vec<String>; 2], SemsError> {
+    let url = format!("{}/sems-plant/api/web/device/centralized/page", s.api);
+    let mut out: [Vec<String>; 2] = Default::default();
+    for (o, (kind, _)) in out.iter_mut().zip(TEMP_FACTORS) {
+        let (v, raw) = post_plus(http, &url, s, Some(json!({ "pageIndex": 1, "pageSize": 50, "deviceTypeList": [kind] })), None).await?;
+        *o = parse_devices(&v, &s.station).map_err(|reason| SemsError::Parse { reason, reply: raw })?;
+    }
+    Ok(out)
+}
+
+/// A signed SEMS+ call: a POST with `body`, a GET without. Maps 401/C0602 to `Expired`, GY0429 to `RateLimited` and any other non-"00000" code to `Parse`.
+async fn post_plus(http: &reqwest::Client, url: &str, s: &Session, body: Option<Value>, timeout: Option<Duration>) -> Result<(Value, String), SemsError> {
+    let req = match &body {
+        Some(b) => http.post(url).json(b),
+        None => http.get(url),
+    };
+    let mut req = req
         .header("Token", &s.token)
         .header("X-Signature", x_signature(now_ms(), &s.uid, &s.raw_token))
         .header("Origin", PLUS_ORIGIN)
         .header("Referer", PLUS_ORIGIN)
         .header("User-Agent", UA)
-        .header("Accept", "application/json, text/plain, */*")
-        .json(&body);
+        .header("Accept", "application/json, text/plain, */*");
     if let Some(t) = timeout {
         req = req.timeout(t);
     }
@@ -697,8 +881,13 @@ mod tests {
                 let day = LocalTs::parse("2026-10-18 00:00:00").unwrap().day();
                 let g = parse_grid_day(&v["reply"], day, false).unwrap_or_else(|e| panic!("{name}: {e}"));
                 assert!(!g.off.is_empty(), "{name}: no off minutes");
+            } else if name.starts_with("sems-plus-devices-") {
+                assert_eq!(parse_devices(&v, "station-0001").unwrap_or_else(|e| panic!("{name}: {e}")).len(), 1, "{name}");
+            } else if name.starts_with("sems-plus-telemetry-") {
+                let found = TEMP_FACTORS.iter().filter_map(|(_, code)| parse_telemetry(&v, code).unwrap_or_else(|e| panic!("{name}: {e}"))).count();
+                assert_eq!(found, 1, "{name}: one temperature factor");
             } else {
-                panic!("{name}: unknown sample kind; name it monitor-detail-*, sems-plus-power-history-* or sems-plus-grid-history* and add a check");
+                panic!("{name}: unknown sample kind; name it monitor-detail-*, sems-plus-power-history-*, sems-plus-grid-history*, sems-plus-devices-* or sems-plus-telemetry-* and add a check");
             }
             n += 1;
         }
@@ -823,6 +1012,101 @@ mod tests {
     }
 
     #[test]
+    fn plus_device_temperatures() {
+        // T-038: real replies, 2026-11-21 (GW6000-ES-C10 + LX A5.0-30)
+        let devices = |f: &str, station: &str| parse_devices(&sample(f), station);
+        assert_eq!(devices("sems-plus-devices-inverter.json", "station-0001"), Ok(vec!["SN-INVERTER-0001".to_owned()]));
+        assert_eq!(devices("sems-plus-devices-battery-rack.json", "station-0001"), Ok(vec!["SN-BATTERY-0001".to_owned()]));
+        assert_eq!(devices("sems-plus-devices-inverter.json", "another"), Ok(vec![]), "only the signed-in station's");
+        let (inv, bat) = (sample("sems-plus-telemetry-inverter.json"), sample("sems-plus-telemetry-battery-rack.json"));
+        assert_eq!((parse_telemetry(&inv, "Temperature"), parse_telemetry(&bat, "tempMaxCell")), (Ok(Some(38.2)), Ok(Some(30.4))));
+        assert_eq!(parse_telemetry(&bat, "tempMinCell"), Ok(Some(29.5)));
+        assert_eq!(parse_telemetry(&inv, "tempMaxCell"), Ok(None), "another model's factor");
+        // by code, not position: moved to another group it is still found
+        let mut moved = bat.clone();
+        let f = moved["data"][1]["factors"].as_array_mut().unwrap();
+        let i = f.iter().position(|x| x["code"] == "tempMaxCell").unwrap();
+        let x = f.remove(i);
+        moved["data"][0]["factors"].as_array_mut().unwrap().insert(0, x);
+        assert_eq!(parse_telemetry(&moved, "tempMaxCell"), Ok(Some(30.4)));
+        // an offline device sends no number; an error code is unreadable
+        for empty in ["--", ""] {
+            let mut v = inv.clone();
+            v["data"][0]["factors"].as_array_mut().unwrap().iter_mut().filter(|x| x["code"] == "Temperature").for_each(|x| x["data"] = json!(empty));
+            assert_eq!(parse_telemetry(&v, "Temperature"), Ok(None), "{empty:?}");
+        }
+        assert!(parse_telemetry(&json!({"code": "B0001", "description": "system error"}), "Temperature").unwrap_err().starts_with("code B0001"));
+        assert!(parse_devices(&json!({"code": "P0200"}), "station-0001").is_err());
+    }
+
+    #[test]
+    fn failed_telemetry_keeps_the_last_temperatures() {
+        // T-038 edge case: a failed call keeps the last value, marked old; no rack is a real "none"
+        assert_eq!(keep_last([Some(Some(38.1)), Some(Some(30.4))], [Some(37.0), Some(29.0)]), ([Some(38.1), Some(30.4)], false));
+        assert_eq!(keep_last([Some(Some(38.1)), None], [Some(37.0), Some(29.0)]), ([Some(38.1), Some(29.0)], true));
+        assert_eq!(keep_last([None, None], [Some(37.0), Some(29.0)]), ([Some(37.0), Some(29.0)], true), "the list call failed");
+        assert_eq!(keep_last([Some(Some(38.1)), Some(None)], [Some(37.0), Some(29.0)]), ([Some(38.1), None], false), "no battery rack");
+        assert_eq!(keep_last([None, None], [None, None]), ([None, None], false), "nothing to keep is not old");
+    }
+
+    #[test]
+    fn telemetry_results_fold_per_kind() {
+        // T-038 B-O3: (kind index, result) per device → per kind fresh / none / failed, and whether to keep the list
+        let bad = || Err(SemsError::Parse { reason: "code B0001: system error".into(), reply: "{}".into() });
+        assert_eq!(fold_temps(&[(0, Ok(Some(38.9))), (1, Ok(Some(30.9)))]), ([Some(Some(38.9)), Some(Some(30.9))], true));
+        assert_eq!(fold_temps(&[(0, Ok(Some(38.9)))]), ([Some(Some(38.9)), Some(None)], true), "no battery rack");
+        assert_eq!(fold_temps(&[(0, Ok(Some(38.9))), (1, Ok(Some(30.9))), (1, Ok(Some(33.2)))]), ([Some(Some(38.9)), Some(Some(33.2))], true), "two racks: the hottest");
+        assert_eq!(fold_temps(&[(0, Ok(Some(38.9))), (1, Ok(Some(30.9))), (1, Err(SemsError::Network("timeout".into())))]), ([Some(Some(38.9)), Some(Some(30.9))], true), "one rack of two answered");
+        // failed: kept for keep_last; a timeout keeps the list, an unreadable reply lists again (B-O2)
+        assert_eq!(fold_temps(&[(0, Err(SemsError::Network("timeout".into()))), (1, Ok(Some(30.9)))]), ([None, Some(Some(30.9))], true));
+        assert_eq!(fold_temps(&[(0, Ok(Some(38.9))), (1, bad())]), ([Some(Some(38.9)), None], false));
+        // rate limited (B-R1): plus_temps sends the devices after it as RateLimited, no call; the list is kept
+        assert_eq!(fold_temps(&[(0, Err(SemsError::RateLimited)), (1, Err(SemsError::RateLimited))]), ([None, None], true));
+    }
+
+    #[tokio::test]
+    async fn a_rate_limit_stops_the_telemetry_calls() {
+        // T-038 B-R1: the inverter's call is rate limited, so neither rack is asked this poll
+        let devices = [vec!["SN-INVERTER-0001".to_owned()], vec!["SN-BATTERY-0001".to_owned(), "SN-BATTERY-0002".to_owned()]];
+        let calls = std::cell::Cell::new(0);
+        let r = each_device(&devices, |i, _| {
+            calls.set(calls.get() + 1);
+            async move { if i == 0 { Err(SemsError::RateLimited) } else { Ok(Some(30.0)) } }
+        })
+        .await;
+        assert_eq!(calls.get(), 1);
+        assert_eq!(fold_temps(&r), ([None, None], true), "both kept old, the list kept");
+        // no rate limit: every device once
+        calls.set(0);
+        let r = each_device(&devices, |i, _| {
+            calls.set(calls.get() + 1);
+            async move { Ok(Some(if i == 0 { 38.9 } else { 30.0 })) }
+        })
+        .await;
+        assert_eq!((calls.get(), fold_temps(&r)), (3, ([Some(Some(38.9)), Some(Some(30.0))], true)));
+    }
+
+    #[test]
+    fn plus_sign_in_moves_past_a_refusing_address() {
+        // T-038 B-O1: a code refusal goes on while an address is left; a wrong password stops at once
+        let code = |c: &str| Err(SemsError::Parse { reason: format!("code {c}: x"), reply: "{}".into() });
+        assert!(matches!(login_next(&code("B0001"), false), LoginNext::Refused));
+        assert!(matches!(login_next(&code("B0001"), true), LoginNext::Stop), "the last address's refusal is the answer");
+        assert!(matches!(login_next(&code("100005"), false), LoginNext::Stop), "a wrong password is not sent to every address");
+        assert!(matches!(login_next(&Err(SemsError::Network("timeout".into())), false), LoginNext::Unanswered));
+        assert!(matches!(login_next(&Err(SemsError::RateLimited), false), LoginNext::Stop));
+        assert!(matches!(login_next(&Ok((json!({}), String::new())), false), LoginNext::Stop));
+    }
+
+    #[test]
+    fn plus_sign_in_goes_to_the_reply_address_first() {
+        // T-038 § 3: after the first sign-in, the address its reply named; the fixed ones only as fallbacks
+        let urls = plus_login_urls(Some("https://hk-gateway.semsportal.com/web/sems"));
+        assert_eq!(urls, ["https://hk-gateway.semsportal.com/web/sems/sems-user/api/v1/auth/cross-login", PLUS_LOGIN, PLUS_LOGIN_HK]);
+        assert_eq!(plus_login_urls(None), [PLUS_LOGIN, PLUS_LOGIN_HK]);
+    }
+
+    #[test]
     fn no_battery_station() {
         let mut v = sample("monitor-detail-grid-off.json");
         v["data"]["info"]["is_stored"] = json!(false);
@@ -915,6 +1199,15 @@ mod tests {
         let mut c = Client::new(None);
         c.sign_in(Credentials { account: get("SEMS_ACCOUNT"), password: get("SEMS_PASSWORD") }).await.unwrap_or_else(|e| panic!("{e}")); // Display never shows the reply body
         let r = c.reading().await.unwrap_or_else(|e| panic!("{e}"));
+        // T-038 § 3: the address a SEMS+ sign-in reply names takes the next sign-in itself (no fallback)
+        if c.plus.is_none() {
+            c.day(r.time, r.utc_offset_h, false).await.unwrap_or_else(|e| panic!("{e}"));
+        }
+        let api = c.plus_api.clone().expect("a SEMS+ sign-in ran");
+        let anon = Session { token: json!({"uid":"","token":"","timestamp":0,"client":"semsPlusWeb","version":"","language":"en"}).to_string(), api: String::new(), station: String::new(), uid: String::new(), raw_token: String::new(), devices: None };
+        let body = json!({ "account": get("SEMS_ACCOUNT"), "pwd": plus_pwd(&get("SEMS_PASSWORD")), "agreement": 1, "isChinese": false, "isLocal": false });
+        let (v, _) = post_plus(&c.http, &plus_login_urls(Some(&api))[0], &anon, Some(body), None).await.unwrap_or_else(|e| panic!("{e}"));
+        println!("sems+ sign-in at the reply's address: token {}, same address {}", v["data"]["token"].as_str().is_some_and(|t| !t.is_empty()), v["data"]["api"].as_str().map(|a| a.trim_end_matches('/')) == Some(api.as_str()));
         println!("reading at {} {}: grid {:?} (vac1 {}, status {:?}), battery {:?}", r.time.date(), r.time.hhmm(), r.grid, r.vac1, r.grid_status, r.battery);
         let d = c.day(r.time, r.utc_offset_h, false).await.unwrap_or_else(|e| panic!("{e}"));
         let ch = d.chart.unwrap_or_else(|e| panic!("{e}"));

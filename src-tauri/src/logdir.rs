@@ -21,7 +21,7 @@ const DUMP_EVERY_S: u64 = 6 * 3600;
 /// Keys whose values are personal (ids, serials, names, places, secrets). Matched lower-case.
 const PERSONAL: &[&str] = &[
     "token", "pwd", "password", "account", "email", "phone", "address", "latitude", "longitude", "lat", "lng",
-    "check_code", "org_code", "org_name", "stationname", "sns", "parallelsnlist", "parallelbat_sn_list",
+    "check_code", "org_code", "org_name", "stationname", "sns", "parallelsnlist", "parallelbat_sn_list", "snquery",
 ];
 
 fn personal(key: &str) -> bool {
@@ -144,16 +144,18 @@ fn scrub_text(raw: &str) -> String {
 }
 
 /// Replaces personal values with "redacted", recursively: by key, by the sibling `key` of a
-/// label/value pair (`dict.left[]`: `{"key": "serialNum", "value": …}`), any string that looks
+/// label/value pair (`dict.left[]`: `{"key": "serialNum", "value": …}`; SEMS+ telemetry factors:
+/// `{"code": "sn", "data": …}`, T-038), any string that looks
 /// like an email; and any UUID inside a string becomes the zero UUID.
 pub fn redact(v: &Value) -> Value {
     match v {
         Value::Object(m) => {
-            let label_personal = m.get("key").and_then(Value::as_str).is_some_and(personal);
+            let label = |k: &str| m.get(k).and_then(Value::as_str).is_some_and(personal);
+            let (key_personal, code_personal) = (label("key"), label("code"));
             Value::Object(
                 m.iter()
                     .map(|(k, x)| {
-                        let hide = personal(k) || (label_personal && k == "value");
+                        let hide = personal(k) || (key_personal && k == "value") || (code_personal && k == "data");
                         (k.clone(), if hide && !x.is_null() { json!("redacted") } else { redact(x) })
                     })
                     .collect(),
@@ -362,6 +364,19 @@ mod tests {
         assert!(r["components"]["para"].as_str().unwrap().contains(ZERO_UUID));
         assert_eq!(scrub_uuids("é 3F2C9A1E-7B4D-4C2A-9E1F-5A6B7C8D9E0F!"), format!("é {ZERO_UUID}!"));
         assert_eq!(scrub_uuids("not-a-uuid"), "not-a-uuid");
+    }
+
+    #[test]
+    fn redacts_sems_plus_telemetry_and_device_lists() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        for (f, sn) in [("sems-plus-telemetry-battery-rack.json", "SN-BATTERY-0001"), ("sems-plus-devices-inverter.json", "SN-INVERTER-0001")] {
+            let v: Value = serde_json::from_str(&fs::read_to_string(dir.join(f)).unwrap()).unwrap();
+            let out = redact(&v).to_string();
+            assert!(!out.contains(sn) && !out.contains("station-0001"), "{f}: a serial or station survived");
+            assert!(out.contains("tempMaxCell") || out.contains("GW6000"), "{f}: the readings stay");
+        }
+        // a reply's own code/data pair is not a label: the data stays
+        assert_eq!(redact(&json!({"code": "00000", "data": [1]})), json!({"code": "00000", "data": [1]}));
     }
 
     #[test]

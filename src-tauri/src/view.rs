@@ -47,9 +47,10 @@ pub struct Temp {
 }
 
 /// Both temperatures of the reading shown; level, state and trend on the unrounded values. No
-/// trend while stale (the values, words and bars stay, like the battery %).
+/// trend while stale, or while they are the last ones kept over a failed SEMS+ call (the values,
+/// words and bars stay, like the battery %).
 fn temps(m: &Monitor, r: &crate::sems::Reading, stale: bool) -> Option<TempsView> {
-    let base = m.temp_base().filter(|_| !stale);
+    let base = m.temp_base().filter(|_| !stale && !r.temps_old);
     let one = |c: Option<f64>, then: Option<f64>, lim| {
         c.map(|c| Temp { text: rules::fmt_temp(c), level: rules::temp_level(c, lim), state: rules::temp_state(c, lim), trend: then.and_then(|t| rules::temp_trend(t, c)) })
     };
@@ -265,6 +266,7 @@ mod tests {
             utc_offset_h: Some(5.0),
             inverter_c: None,
             battery_c: None,
+            temps_old: false,
             created: None,
         }
     }
@@ -310,6 +312,15 @@ mod tests {
         // stale: values and words stay, arrows go
         let v = temps(&m, t0 + 16 * MIN);
         assert_eq!((v["inverter"]["text"].as_str(), v["inverter"].get("trend"), v["battery"]["state"].as_str()), (Some("43°C"), None, Some("warm")));
+        // T-038: a failed SEMS+ telemetry call keeps the last temperatures: values stay, arrows go,
+        // and they are not a trend sample
+        let mut r = reading("10/18/2026 08:32:00", GridSignal::On, Some((90.0, 0.0)));
+        (r.inverter_c, r.battery_c, r.temps_old) = (Some(42.5), Some(43.9), true);
+        m.on_reading(r, t0);
+        let v = temps(&m, t0);
+        assert_eq!((v["inverter"]["text"].as_str(), v["inverter"].get("trend"), v["battery"]["state"].as_str()), (Some("43°C"), None, Some("warm")));
+        assert_eq!(crate::settings::temps_sent(&m), "both", "Settings never says doesn't send over a hiccup");
+        assert_eq!(m.temps.last().map(|t| t.0.hhmm()), Some("08:30".into()));
         // one reading missing: its pair goes; neither, or the switch off: no section
         at(&mut m, "08:35", Some(72.0), None);
         assert_eq!(temps(&m, t0), serde_json::json!({ "inverter": { "text": "72°C", "level": 0.9, "state": "hot", "trend": "up" } }));

@@ -1127,7 +1127,7 @@ mod tests {
     async fn automation_skips_first_reading() {
         // The first reading after launch starts from Unknown: no notice, so no hook call.
         let mut m = Monitor::new(true);
-        let r = |t: &str, g| Reading { time: LocalTs::parse(t).unwrap(), grid: g, vac1: 0.0, grid_status: None, battery: None, utc_offset_h: None, inverter_c: None, battery_c: None, created: None };
+        let r = |t: &str, g| Reading { time: LocalTs::parse(t).unwrap(), grid: g, vac1: 0.0, grid_status: None, battery: None, utc_offset_h: None, inverter_c: None, battery_c: None, temps_old: false, created: None };
         let now = std::time::Instant::now();
         assert!(m.on_reading(r("2026-10-18 09:50:00", GridSignal::Off), now).is_none());
         let n = m.on_reading(r("2026-10-18 09:52:00", GridSignal::On), now).unwrap();

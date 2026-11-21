@@ -1,0 +1,53 @@
+{
+  "code": "00000",
+  "description": "成功",
+  "traceId": "redacted",
+  "data": {
+    "dataList": [
+      {
+        "stationId": "station-0001",
+        "stationName": "redacted",
+        "count": 1,
+        "powerStationType": 2,
+        "timespan": -5,
+        "zoneId": "redacted",
+        "children": [
+          {
+            "stationName": "redacted",
+            "stationId": "station-0001",
+            "sn": "SN-BATTERY-0001",
+            "name": "redacted",
+            "deviceType": "BATTERY_RACK",
+            "model": "LX A5.0-30",
+            "orgName": "redacted",
+            "orgId": "redacted",
+            "status": 5,
+            "addTime": "1789728415826",
+            "zoneId": "redacted",
+            "timespan": -5,
+            "picture": "redacted",
+            "snQuery": [
+              "SN-BATTERY-0001"
+            ],
+            "faultStatus": false,
+            "onlineStatus": false,
+            "runningStatus": true,
+            "soc": "71",
+            "totalSeriesCells": "16",
+            "isHems": false,
+            "proCharToday": "0.0",
+            "proCharTotal": "454.2",
+            "proDischarToday": "1.5",
+            "proDischarTotal": "417.7",
+            "pBat": "0.47259",
+            "batteryPackNum": "0"
+          }
+        ]
+      }
+    ],
+    "size": 10,
+    "current": 1,
+    "total": 1,
+    "extras": ""
+  }
+}
