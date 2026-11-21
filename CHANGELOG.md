@@ -4,7 +4,16 @@ All notable changes to GoodWe Status are listed here, newest first. The format f
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-11-21
+
+### Added
+- Signing in works even when the old SEMS Portal server doesn't answer: the app falls back to SEMS+, and while only SEMS+ answers, the battery %, Charging or Idle line and grid status come from its newest chart minute. SEMS Portal calls now give up after 8 seconds instead of 20.
+- Signing out keeps your SEMS login, so the sign-in box opens already filled in.
+
 ### Fixed
+- A frozen SEMS reading no longer makes the grid status flip between off and back on every poll, which sent repeated "Grid is off" and "Grid is back" notifications.
+- Settings opens on the desktop you are on instead of jumping back to the one it was first opened on.
+- The Settings window no longer scrolls sideways or as a whole page; only its pane scrolls, up and down, when it is taller than the window.
 - The panel no longer scrolls sideways or up and down, and its right edge is no longer cut off when macOS shows scroll bars (a mouse connected, or "Show scroll bars" set to Always). The panel's height now follows its content whenever a line is added or removed.
 - Inverter and battery temperatures show again while SEMS Portal is down, read from SEMS+, and stay on screen through a short SEMS+ hiccup. The app now signs in to SEMS+ at the address SEMS+ gives for the account, with its Hong Kong address as a fallback.
 - The time left on the battery (or to full) shows again after a restart while SEMS Portal is down, once the app has seen the battery size from SEMS Portal one time.
