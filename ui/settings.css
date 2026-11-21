@@ -4,7 +4,7 @@
    The pane switcher is a segmented control with each pane's glyph. Every value is a token from tokens.css (color-scheme too). */
 /* The switch-off edge must stay 3:1 against the well (WCAG 1.4.11); v2 --hairline-strong is under that (build job 1). */
 :root{--switch-edge:rgba(0,0,0,.45)} @media (prefers-color-scheme: dark){ :root{--switch-edge:rgba(255,255,255,.40)} }
-html,body{margin:0;padding:0;height:100%;background:var(--frame)}
+html,body{margin:0;padding:0;height:100%;background:var(--frame);overflow:hidden;overscroll-behavior:none} /* T-041: the window follows the page, so the page never scrolls or rubber-bands; only the well scrolls */
 *{box-sizing:border-box}
 .win{display:flex;flex-direction:column;max-height:100vh;background:var(--frame);color:var(--text);
   font:var(--t-body);-webkit-font-smoothing:antialiased;cursor:default;user-select:none}
@@ -26,7 +26,7 @@ html,body{margin:0;padding:0;height:100%;background:var(--frame)}
 
 /* ---- Body: sections ---- */
 /* The inset well (owner, second references): the pane sits in it, the frame shows round it */
-.body{flex:0 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain;margin:0 8px 8px;padding:0 18px 16px;border-radius:10px;background:var(--surface)}
+.body{flex:0 1 auto;min-height:0;overflow:hidden auto;overscroll-behavior:contain;margin:0 8px 8px;padding:0 18px 16px;border-radius:10px;background:var(--surface)}
 .body h2{font:var(--t-label);color:var(--text-2);margin:0 -18px;padding:14px 18px 2px;border-top:1px solid var(--hairline)}
 h2.first,.body>h2:first-child{border-top:0}
 /* A section heading with actions on its line (Devices: Refresh, Add Device…) */
@@ -160,7 +160,7 @@ a:focus-visible{outline:2px solid var(--focus);outline-offset:1px;border-radius:
 .st-tr>span:last-child{justify-self:end}
 .st-rows .st-tr+.st-tr::before{content:"";position:absolute;top:0;left:16px;right:16px;height:1px;background:var(--hairline)}
 .st-th{min-height:28px;font:var(--t-caption);color:var(--text-2);border-bottom:1px solid var(--hairline)}
-.st-rows{height:176px;overflow:auto;overscroll-behavior:contain} /* 5½ rows of 32: a 6th row peeks, so a longer day shows it scrolls */
+.st-rows{height:176px;overflow:hidden auto;overscroll-behavior:contain} /* 5½ rows of 32: a 6th row peeks, so a longer day shows it scrolls */
 .st-tr em{font-style:normal;font-family:var(--font-sans);color:var(--text-2)}
 /* The running cut: 'Still off' as an alert pill (a status, so it may look like a tag) */
 .st-tr.is-running b{justify-self:start;font:var(--t-mono);font-size:12px;line-height:20px;color:var(--alert);background:var(--tint-alert);padding:0 8px;border-radius:var(--r-pill);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--alert) 40%,transparent)}
