@@ -111,6 +111,17 @@ fn resize_keep_top(win: &WebviewWindow, h: f64, secs: f64) {
     });
 }
 
+/// T-042: Settings opens on the desktop (Space) the user is on. Without this, AppKit switches back to the Space the
+/// window was first shown on. Called once at launch, on the main thread.
+#[cfg(target_os = "macos")]
+pub fn follow_space(win: &WebviewWindow) {
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+    let Ok(p) = win.ns_window() else { return };
+    // SAFETY: tao's live NSWindow, used on the main thread (setup) inside this call only.
+    let ns: &NSWindow = unsafe { &*p.cast() };
+    ns.setCollectionBehavior(ns.collectionBehavior() | NSWindowCollectionBehavior::MoveToActiveSpace);
+}
+
 /// Elsewhere: at once, the top edge put back (the toolkit keeps the bottom).
 #[cfg(not(target_os = "macos"))]
 fn resize_keep_top(win: &WebviewWindow, h: f64, _secs: f64) {

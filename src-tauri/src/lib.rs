@@ -122,7 +122,10 @@ pub fn run() {
             updater::check(app.handle());
             // The close button hides Settings (one instance, opened again by Settings…).
             let h = app.handle().clone();
-            app.get_webview_window("settings").expect("settings window in tauri.conf.json").on_window_event(move |e| {
+            let settings_win = app.get_webview_window("settings").expect("settings window in tauri.conf.json");
+            #[cfg(target_os = "macos")]
+            settings::follow_space(&settings_win);
+            settings_win.on_window_event(move |e| {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = e {
                     api.prevent_close();
                     settings::close(&h);
