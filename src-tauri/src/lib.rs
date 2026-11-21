@@ -56,6 +56,10 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             let log_dir = app.path().app_log_dir()?;
+            // Before any sems::Client: each one reads the saved battery size when made (T-039).
+            if let Ok(d) = app.path().app_data_dir() {
+                let _ = sems::SIZE_FILE.set(d.join("battery-kwh"));
+            }
             app.manage(signin::SignIn::default());
             app.manage(settings::Settings::default());
             app.manage(updater::Updater::new(app.handle(), log_dir.clone()));

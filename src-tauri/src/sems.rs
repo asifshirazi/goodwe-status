@@ -217,8 +217,9 @@ pub fn parse_reading(v: &Value) -> Result<Reading, String> {
 }
 
 /// The newest chart minute as a `Reading`: battery % and kW, and the grid from that minute's off rule.
-/// `cached` (the last classic reading) lends the set-up day and battery size. `None`: no point yet.
-pub fn reading_from_chart(chart: &ChartSeries, grid: &GridDay, cached: Option<&Reading>, offset_h: f64) -> Option<Reading> {
+/// `cached` (the last classic reading) lends the set-up day and battery size; `saved_kwh` (the size a
+/// classic reading gave in an earlier run, T-039) stands in for the size when there is none. `None`: no point yet.
+pub fn reading_from_chart(chart: &ChartSeries, grid: &GridDay, cached: Option<&Reading>, saved_kwh: Option<f64>, offset_h: f64) -> Option<Reading> {
     let &(m, soc, kw) = chart.points.last()?;
     let off = grid.off.iter().any(|&(x, _)| x == m);
     Some(Reading {
@@ -226,7 +227,7 @@ pub fn reading_from_chart(chart: &ChartSeries, grid: &GridDay, cached: Option<&R
         grid: if off { GridSignal::Off } else { GridSignal::On },
         vac1: 0.0, // SEMS+ has no grid voltage
         grid_status: None,
-        battery: Some(Battery { soc, watts: kw * 1000.0, capacity_kwh: cached.and_then(|c| c.battery.as_ref()?.capacity_kwh) }),
+        battery: Some(Battery { soc, watts: kw * 1000.0, capacity_kwh: cached.and_then(|c| c.battery.as_ref()?.capacity_kwh).or(saved_kwh) }),
         utc_offset_h: Some(offset_h),
         inverter_c: None,
         battery_c: None,
@@ -504,6 +505,22 @@ struct Session {
     devices: Option<[Vec<String>; 2]>,
 }
 
+/// Where the battery size (kWh) is kept between runs, set once at start-up (T-039). Unset in tests.
+pub static SIZE_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// The saved battery size, or `None` when no classic reading has given one yet.
+fn load_size(path: Option<&std::path::Path>) -> Option<f64> {
+    std::fs::read_to_string(path?).ok()?.trim().parse().ok().filter(|c: &f64| *c > 0.0)
+}
+
+/// Writes the size, replacing the one before. A failed write only costs the time-left line after
+/// the next restart with SEMS Portal down, so it is not reported.
+fn write_size(path: &std::path::Path, kwh: f64) {
+    if path.parent().is_none_or(|d| std::fs::create_dir_all(d).is_ok()) {
+        let _ = std::fs::write(path, kwh.to_string());
+    }
+}
+
 /// One SEMS+ day call (statisticsAndPreV2), body included.
 const DAY_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -520,6 +537,8 @@ pub struct Client {
     last_temps: [Option<f64>; 2],
     /// The last SEMS+ telemetry round's outcome (its first failure), until the poll takes it for the log (T-038 B-Y1).
     temps_result: Option<Result<(), SemsError>>,
+    /// The battery size from `SIZE_FILE`: lent to chart readings when `cached` is empty (after a restart or sign-in, T-039).
+    saved_kwh: Option<f64>,
     /// One SEMS+ day call at a time across the app: the poll's and the history walk's (T-015 § 4.7).
     gate: std::sync::Arc<tokio::sync::Mutex<()>>,
     /// The call `reading` or `day` made last ("sems/login", "sems+/day", …), for the log (T-026).
@@ -532,7 +551,7 @@ impl Client {
             .timeout(Duration::from_secs(20))
             .build()
             .expect("reqwest client"); // only fails if the TLS backend can't start
-        Client { http, creds, classic: None, plus: None, cached: None, plus_api: None, last_temps: [None, None], temps_result: None, gate: Default::default(), call: "sems/reading" }
+        Client { http, creds, classic: None, plus: None, cached: None, plus_api: None, last_temps: [None, None], temps_result: None, saved_kwh: load_size(SIZE_FILE.get().map(|p| p.as_path())), gate: Default::default(), call: "sems/reading" }
     }
 
     pub fn signed_in(&self) -> bool {
@@ -598,6 +617,7 @@ impl Client {
         match self.classic_reading().await {
             Ok(r) => {
                 self.last_temps = [r.inverter_c, r.battery_c];
+                self.save_size(r.battery.as_ref().and_then(|b| b.capacity_kwh));
                 Ok(self.cached.insert(r).clone())
             }
             Err(e @ (SemsError::Network(_) | SemsError::Body(_))) => self.plus_reading().await.map_err(|_| e),
@@ -605,11 +625,20 @@ impl Client {
         }
     }
 
+    /// Keeps a classic reading's battery size on disk, written only when it changed (T-039).
+    fn save_size(&mut self, kwh: Option<f64>) {
+        let Some(kwh) = kwh.filter(|k| Some(*k) != self.saved_kwh) else { return };
+        self.saved_kwh = Some(kwh);
+        if let Some(p) = SIZE_FILE.get() {
+            write_size(p, kwh);
+        }
+    }
+
     async fn plus_reading(&mut self) -> Result<Reading, SemsError> {
         let offset = self.cached.as_ref().and_then(|c| c.utc_offset_h).unwrap_or_else(mac_offset_h);
         let today = LocalTs((now_ms() / 1000) as i64 + (offset * 3600.0) as i64);
         let d = self.day(today, Some(offset), false).await?;
-        let mut r = reading_from_chart(&d.chart?, &d.grid?, self.cached.as_ref(), offset).ok_or_else(|| SemsError::Network("no chart point yet".into()))?;
+        let mut r = reading_from_chart(&d.chart?, &d.grid?, self.cached.as_ref(), self.saved_kwh, offset).ok_or_else(|| SemsError::Network("no chart point yet".into()))?;
         let ([inv, bat], old) = keep_last(self.plus_temps().await, self.last_temps);
         (r.inverter_c, r.battery_c, r.temps_old) = (inv, bat, old);
         self.last_temps = [inv, bat];
@@ -999,15 +1028,48 @@ mod tests {
     }
 
     #[test]
+    fn chart_reading_keeps_the_saved_battery_size() {
+        let day = LocalTs::parse("11/17/2026 00:00:00").unwrap().day();
+        let chart = ChartSeries { day, points: vec![(1100, 73.0, 0.532)] };
+        let kwh = |cached: Option<&Reading>, saved| reading_from_chart(&chart, &GridDay::default(), cached, saved, 5.0).unwrap().battery.unwrap().capacity_kwh;
+        // After a restart: no classic reading yet, the saved size stands in, so time-left has what it needs.
+        assert_eq!(kwh(None, Some(10.2)), Some(10.2));
+        let classic = parse_reading(&sample("monitor-detail-grid-off.json")).unwrap();
+        // A classic reading this run still wins over the saved size.
+        assert_eq!(kwh(Some(&classic), Some(10.2)), Some(5.1));
+        assert!(crate::rules::time_left_min(kwh(None, Some(10.2)), 73.0, 532.0).is_some(), "time-left line has a size to work from");
+    }
+
+    #[test]
+    fn battery_size_file_round_trip() {
+        let p = std::env::temp_dir().join(format!("goodwe-t039-{}/battery-kwh", std::process::id()));
+        assert_eq!(load_size(Some(&p)), None);
+        assert_eq!(load_size(None), None);
+        write_size(&p, 5.1);
+        assert_eq!(load_size(Some(&p)), Some(5.1));
+        write_size(&p, 10.2); // a changed battery replaces it
+        assert_eq!(load_size(Some(&p)), Some(10.2));
+        std::fs::write(&p, "junk").unwrap();
+        assert_eq!(load_size(Some(&p)), None);
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+        let mut c = Client::new(None);
+        c.save_size(Some(5.1));
+        c.save_size(None); // a classic reading without a size keeps the old one
+        assert_eq!(c.saved_kwh, Some(5.1));
+        c.save_size(Some(10.2));
+        assert_eq!(c.saved_kwh, Some(10.2));
+    }
+
+    #[test]
     fn chart_stands_in_for_the_reading() {
         let day = LocalTs::parse("11/17/2026 00:00:00").unwrap().day();
         let chart = ChartSeries { day, points: vec![(1090, 97.0, 0.0), (1100, 98.0, -1.6)] };
         let mut grid = GridDay::default();
-        let r = reading_from_chart(&chart, &grid, None, 5.0).unwrap();
+        let r = reading_from_chart(&chart, &grid, None, None, 5.0).unwrap();
         assert_eq!((r.time.hhmm(), r.grid, r.battery.clone().map(|b| (b.soc, b.watts))), ("18:20".into(), GridSignal::On, Some((98.0, -1600.0))));
         grid.off = vec![(1100, true)];
-        assert_eq!(reading_from_chart(&chart, &grid, None, 5.0).unwrap().grid, GridSignal::Off);
-        assert_eq!(reading_from_chart(&ChartSeries { day, points: vec![] }, &grid, None, 5.0), None);
+        assert_eq!(reading_from_chart(&chart, &grid, None, None, 5.0).unwrap().grid, GridSignal::Off);
+        assert_eq!(reading_from_chart(&ChartSeries { day, points: vec![] }, &grid, None, None, 5.0), None);
         assert_eq!((parse_zone("+0500\n"), parse_zone("-0330"), parse_zone("x")), (Some(5.0), Some(-3.5), None));
     }
 
